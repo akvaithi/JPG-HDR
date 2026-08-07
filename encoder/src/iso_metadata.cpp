@@ -143,15 +143,28 @@ Bytes buildMpfSegmentPlaceholder() {
 }
 
 void patchMpfSegment(Bytes& file, size_t primarySize, size_t secondarySize) {
-  // Search only the primary image's header for the identifier.
+  // Walk the primary image's marker segments rather than scanning for the
+  // identifier: Exif or an ICC profile could contain the same four bytes.
   const size_t limit = std::min(primarySize, file.size());
   size_t idPos = std::string::npos;
-  for (size_t i = 0; i + 4 <= limit; ++i) {
-    if (file[i] == 'M' && file[i + 1] == 'P' && file[i + 2] == 'F' &&
-        file[i + 3] == 0) {
-      idPos = i;
+  size_t i = 2;  // skip SOI
+  while (i + 4 <= limit) {
+    if (file[i] != 0xff) break;
+    const uint8_t marker = file[i + 1];
+    if (marker == 0xd8 || marker == 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      i += 2;
+      continue;
+    }
+    if (marker == 0xda || marker == 0xd9) break;  // start of scan: past the headers
+    const size_t length = readU16BE(&file[i + 2]);
+    if (length < 2 || i + 2 + length > limit) break;
+    const size_t payload = i + 4;
+    if (marker == 0xe2 && length - 2 >= 4 &&
+        std::memcmp(&file[payload], "MPF\0", 4) == 0) {
+      idPos = payload;
       break;
     }
+    i += 2 + length;
   }
   if (idPos == std::string::npos)
     fail("internal error: MPF segment not found in the primary image");

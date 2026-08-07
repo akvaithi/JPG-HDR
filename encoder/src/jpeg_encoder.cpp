@@ -174,10 +174,20 @@ void generateOptimalTable(const std::vector<uint32_t>& freqIn, HuffTable* out) {
   std::memset(out->bits, 0, sizeof(out->bits));
   for (int i = 1; i <= 16; ++i) out->bits[i] = static_cast<uint8_t>(bits[i]);
 
+  // Symbols are listed in order of their *original* code length, across the
+  // full range — the adjustment above rewrote the length histogram, and the
+  // actual code lengths come from bits[]. Stopping the sweep at 16 here would
+  // silently drop every symbol that started out longer than 16 bits.
   out->values.clear();
-  for (int len = 1; len <= 16; ++len)
+  for (int len = 1; len <= kMaxCodeLen; ++len)
     for (int sym = 0; sym < 256; ++sym)
       if (codesize[sym] == len) out->values.push_back(static_cast<uint8_t>(sym));
+
+  size_t coded = 0;
+  for (int len = 1; len <= 16; ++len) coded += out->bits[len];
+  if (coded != out->values.size())
+    fail("internal error: Huffman table has " + std::to_string(coded) +
+         " code slots for " + std::to_string(out->values.size()) + " symbols");
   out->deriveCodes();
 }
 

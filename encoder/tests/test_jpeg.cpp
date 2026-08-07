@@ -1,4 +1,5 @@
 // Structural checks on the baseline JPEG encoder.
+#include <cmath>
 #include <cstring>
 #include <map>
 
@@ -101,6 +102,53 @@ void optimizedTablesAreSmaller() {
   CHECK(encodeJpeg(img, optimized).size() <= encodeJpeg(img, plain).size());
 }
 
+// Regression: an image with a long tail of very rare coefficient symbols
+// produces initial Huffman code lengths above 16 bits. Those symbols must
+// survive the length-limiting adjustment, not be dropped from the table.
+void optimizedTablesKeepRareSymbols() {
+  const uint32_t w = 1400, h = 900;
+  std::vector<uint8_t> px(static_cast<size_t>(w) * h * 3);
+  for (uint32_t y = 0; y < h; ++y) {
+    for (uint32_t x = 0; x < w; ++x) {
+      // Fine texture plus sparse grain: lots of symbols, wildly uneven counts.
+      double base = 128.0 + 100.0 * std::sin(x * 0.31 + y * 0.17) *
+                                std::cos(x * 0.07 - y * 0.23);
+      uint32_t hashed = x * 374761393u + y * 668265263u;
+      hashed = (hashed ^ (hashed >> 13)) * 1274126177u;
+      double grain = (static_cast<double>((hashed ^ (hashed >> 16)) & 0xff) /
+                          255.0 - 0.5) * 12.0;
+      for (int c = 0; c < 3; ++c) {
+        double v = base + grain * (c + 1);
+        px[(static_cast<size_t>(y) * w + x) * 3 + c] =
+            static_cast<uint8_t>(std::min(255.0, std::max(0.0, v)));
+      }
+    }
+  }
+  JpegOptions o;
+  o.quality = 90;
+  o.optimizeHuffman = true;
+  JpegImage img{w, h, 3, px.data()};
+  Bytes out = encodeJpeg(img, o);  // used to throw "missing AC code"
+  checkStructure(out, w, h, 3);
+
+  // Every DHT must declare as many code slots as it lists symbols.
+  size_t end = 0;
+  for (const auto& s : walkJpeg(out, 0, &end)) {
+    if (s.marker != 0xc4) continue;
+    size_t p = s.payloadOffset;
+    const size_t limit = s.payloadOffset + s.payloadSize;
+    while (p < limit) {
+      ++p;  // table class and id
+      size_t total = 0;
+      for (int i = 0; i < 16; ++i) total += out[p + i];
+      p += 16;
+      CHECK(p + total <= limit);
+      p += total;
+    }
+    CHECK_EQ(p, limit);
+  }
+}
+
 void appSegmentsAreEmitted() {
   auto px = gradient(16, 16, 3);
   JpegImage img{16, 16, 3, px.data()};
@@ -147,6 +195,7 @@ void run() {
   encodesColorAndGrey();
   qualityAffectsSize();
   optimizedTablesAreSmaller();
+  optimizedTablesKeepRareSymbols();
   appSegmentsAreEmitted();
   rejectsBadInput();
 }

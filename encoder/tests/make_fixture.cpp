@@ -1,5 +1,6 @@
 // Writes a synthetic HDR TIFF for the exiftool compliance test and for manual
 // experimentation:  make_fixture <out.tif> [width] [height] [peak]
+#include <cmath>
 #include <cstdlib>
 #include <cstdio>
 #include <string>
@@ -12,7 +13,8 @@ int main(int argc, char** argv) {
   using namespace iso21496;
   using namespace iso21496::test;
   if (argc < 2) {
-    std::fprintf(stderr, "usage: make_fixture <out.tif> [w] [h] [peak]\n");
+    std::fprintf(stderr,
+                 "usage: make_fixture <out.tif> [w] [h] [peak] [detail]\n");
     return 2;
   }
   TiffSpec spec;
@@ -22,6 +24,9 @@ int main(int argc, char** argv) {
   spec.floatSamples = true;
   spec.rowsPerStrip = 32;
   const float peak = argc > 4 ? static_cast<float>(std::atof(argv[4])) : 8.0f;
-  writeFile(argv[1], makeTiff(spec, makeHdrPattern(spec.width, spec.height, peak)));
+  const bool detailed = argc > 5 && std::atoi(argv[5]) != 0;
+  auto pixels = detailed ? makeDetailedHdrPattern(spec.width, spec.height, peak)
+                         : makeHdrPattern(spec.width, spec.height, peak);
+  writeFile(argv[1], makeTiff(spec, pixels));
   return 0;
 }

@@ -498,6 +498,7 @@ void TiffReader::expandSegment(const Bytes& seg, uint32_t segFirstRow,
 
 void TiffReader::readRows(uint32_t firstRow, uint32_t rowCount,
                           float* dst) const {
+  if (released_) fail("internal error: readRows after releaseFileData");
   if (firstRow >= height_) fail("readRows past end of image");
   if (firstRow + rowCount > height_) rowCount = height_ - firstRow;
   const uint32_t planes = (planarConfig_ == 2) ? colorChannels_ : 1;

@@ -100,6 +100,11 @@ Bytes makeTiff(const TiffSpec& spec, const std::vector<float>& pixels);
 // specular patch reaching `peak` times SDR white.
 std::vector<float> makeHdrPattern(uint32_t w, uint32_t h, float peak);
 
+// The same scene plus fine detail and grain, so JPEG has something to work at.
+// Used for the size and throughput benchmarks, where a perfectly smooth image
+// would flatter the encoder.
+std::vector<float> makeDetailedHdrPattern(uint32_t w, uint32_t h, float peak);
+
 // --------------------------------------------------------- JPEG structure ---
 
 struct JpegSegment {

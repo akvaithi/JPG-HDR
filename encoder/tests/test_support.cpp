@@ -236,6 +236,29 @@ std::vector<float> makeHdrPattern(uint32_t w, uint32_t h, float peak) {
   return px;
 }
 
+std::vector<float> makeDetailedHdrPattern(uint32_t w, uint32_t h, float peak) {
+  std::vector<float> px = makeHdrPattern(w, h, peak);
+  // A cheap deterministic hash gives repeatable grain without <random>'s cost.
+  auto noise = [](uint32_t x, uint32_t y, uint32_t c) {
+    uint32_t v = x * 374761393u + y * 668265263u + c * 2246822519u;
+    v = (v ^ (v >> 13)) * 1274126177u;
+    return static_cast<float>((v ^ (v >> 16)) & 0xffff) / 65535.0f - 0.5f;
+  };
+  for (uint32_t y = 0; y < h; ++y) {
+    for (uint32_t x = 0; x < w; ++x) {
+      for (uint32_t c = 0; c < 3; ++c) {
+        float& v = px[(static_cast<size_t>(y) * w + x) * 3 + c];
+        // Texture at two scales plus grain, scaled with the local level so
+        // shadows stay clean the way a real raw file does.
+        float texture = 0.10f * std::sin(x * 0.31f + y * 0.17f) *
+                        std::cos(x * 0.07f - y * 0.23f);
+        v = std::max(0.0f, v * (1.0f + texture) + 0.03f * v * noise(x, y, c));
+      }
+    }
+  }
+  return px;
+}
+
 std::vector<JpegSegment> walkJpeg(const Bytes& data, size_t start,
                                   size_t* endOffset) {
   std::vector<JpegSegment> out;

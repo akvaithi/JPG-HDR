@@ -1,0 +1,113 @@
+name: build
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  encoder:
+    name: encoder (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS universal
+            os: macos-14
+            artifact: iso21496_encoder-macos
+          - name: Windows x64
+            os: windows-2022
+            artifact: iso21496_encoder-windows
+          - name: Linux x64
+            os: ubuntu-24.04
+            artifact: iso21496_encoder-linux
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # exiftool and libjpeg switch on the optional compliance and decode
+      # tests; the encoder itself needs neither at build or run time.
+      - name: Install test tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libimage-exiftool-perl libjpeg-dev lua5.4
+
+      - name: Install test tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install exiftool jpeg-turbo lua
+
+      - name: Install test tools (Windows)
+        if: runner.os == 'Windows'
+        run: choco install exiftool --no-progress -y
+
+      - name: Build and test (Unix)
+        if: runner.os != 'Windows'
+        run: ./scripts/build.sh
+
+      - name: Build and test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build_windows.ps1
+
+      - name: Check the macOS binary is universal
+        if: runner.os == 'macOS'
+        run: |
+          archs=$(lipo -archs plugin/iso21496.lrdevplugin/bin/macOS/iso21496_encoder)
+          echo "architectures: $archs"
+          case "$archs" in
+            *arm64*x86_64*|*x86_64*arm64*) ;;
+            *) echo "expected a universal binary, got: $archs" >&2; exit 1 ;;
+          esac
+
+      - name: Confirm there are no dynamic library surprises (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          ldd plugin/iso21496.lrdevplugin/bin/linux/iso21496_encoder || true
+          # Only the C library and the loader may be linked; anything else
+          # would have to be shipped alongside the plug-in.
+          unexpected=$(ldd plugin/iso21496.lrdevplugin/bin/linux/iso21496_encoder \
+            | grep -oE '=> /[^ ]+' | grep -vE 'libc\.so|libm\.so|libgcc_s|ld-linux' || true)
+          if [ -n "$unexpected" ]; then
+            echo "unexpected dynamic dependencies:"; echo "$unexpected"; exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            plugin/iso21496.lrdevplugin/bin/macOS/iso21496_encoder
+            plugin/iso21496.lrdevplugin/bin/windows/iso21496_encoder.exe
+            plugin/iso21496.lrdevplugin/bin/linux/iso21496_encoder
+          if-no-files-found: error
+
+  bundle:
+    name: plug-in bundle
+    needs: encoder
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: iso21496_encoder-macos
+          path: artifacts/macos
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: iso21496_encoder-windows
+          path: artifacts/windows
+
+      - name: Assemble the bundle
+        run: |
+          ./scripts/package.sh \
+            --mac-binary artifacts/macos/bin/macOS/iso21496_encoder \
+            --windows-binary artifacts/windows/bin/windows/iso21496_encoder.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iso21496.lrdevplugin
+          path: dist/iso21496-lightroom-plugin.zip
+          if-no-files-found: error

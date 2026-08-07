@@ -44,7 +44,19 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
   po.autoMaxBoost = opt.autoMaxBoost;
   po.threads = opt.threads;
 
+  // Lift the Exif out first: once the pipeline has run we can drop the whole
+  // intermediate from memory, which matters for 45MP-and-up exports.
+  Bytes exifSegment;
+  if (opt.writeExif) {
+    ExifOptions eo;
+    eo.pixelWidth = tiff.width();
+    eo.pixelHeight = tiff.height();
+    eo.colorSpace = opt.outputPrimaries == ColorPrimaries::sRGB ? 1 : 0xFFFF;
+    exifSegment = buildExifAppSegment(tiff, eo);
+  }
+
   PipelineResult px = runPipeline(tiff, po);
+  tiff.releaseFileData();
   logf("tone mapped with %s; measured headroom %.2f stops, gain map max %.2f",
        toneMapName(opt.toneMap), px.measuredHeadroom, px.maxBoostLog2[0]);
 
@@ -97,15 +109,7 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
     jo.threads = opt.threads;
 
     jo.appSegments.push_back(buildJfifAppSegment());
-    if (opt.writeExif) {
-      ExifOptions eo;
-      eo.pixelWidth = px.width;
-      eo.pixelHeight = px.height;
-      eo.colorSpace =
-          opt.outputPrimaries == ColorPrimaries::sRGB ? 1 : 0xFFFF;
-      Bytes exif = buildExifAppSegment(tiff, eo);
-      if (!exif.empty()) jo.appSegments.push_back(std::move(exif));
-    }
+    if (!exifSegment.empty()) jo.appSegments.push_back(std::move(exifSegment));
     if (opt.writeXmp)
       jo.appSegments.push_back(
           buildXmpAppSegment(buildPrimaryXmp(gainMapJpeg.size())));

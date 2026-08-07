@@ -55,6 +55,15 @@ class TiffReader {
   // safe: concurrent calls for disjoint row ranges are fine.
   void readRows(uint32_t firstRow, uint32_t rowCount, float* dst) const;
 
+  // Frees the file image once all pixels and metadata have been consumed.
+  // readRows and metadata accessors must not be called afterwards; this exists
+  // so a 45MP export does not hold the intermediate in memory while the JPEG
+  // encoder needs room for its own buffers.
+  void releaseFileData() {
+    Bytes().swap(data_);
+    released_ = true;
+  }
+
   // Natural decode granularity (strip height / tile height). Reading in
   // multiples of this avoids decompressing the same segment twice.
   uint32_t suggestedBandRows() const {
@@ -105,6 +114,7 @@ class TiffReader {
   std::vector<uint32_t> segOffsets_;
   std::vector<uint32_t> segByteCounts_;
   TiffMetadata meta_;
+  bool released_ = false;
 };
 
 }  // namespace iso21496
