@@ -16,8 +16,11 @@ struct EncodeReport {
   size_t primaryBytes = 0;
   size_t gainMapBytes = 0;
   size_t totalBytes = 0;
+  float minBoostLog2 = 0.0f;
   float maxBoostLog2 = 0.0f;
+  float declaredHeadroom = 0.0f;
   float measuredHeadroom = 0.0f;
+  float truePeakHeadroom = 0.0f;
   std::string inputPrimaries;
   std::string inputTransfer;
   double seconds = 0.0;

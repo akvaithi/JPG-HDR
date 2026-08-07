@@ -45,6 +45,91 @@ float toneMapLuminance(ToneMapOperator op, float l, float lmax) {
   }
 }
 
+// Everything that turns an HDR luminance into the SDR base image, in one
+// place: the tone curve, the lift, and the contrast shaping. Used by the pixel
+// loop and by the analytic gain-floor sweep, so the two cannot drift apart.
+struct SdrShaper {
+  ToneMapOperator op = ToneMapOperator::Reinhard;
+  float toneCeiling = 16.0f;  // linear; the headroom the tone curve maps to 1.0
+  float liftGain = 1.0f;      // 2^sdrLiftEV
+  float contrast = 1.0f;
+  float pivotScale = 1.0f;    // pivot^(1-contrast), precomputed
+
+  // The tone-mapped, lifted, contrast-shaped luminance, before clamping.
+  float shapedLuminance(float lHdr) const {
+    float v = toneMapLuminance(op, lHdr, toneCeiling) * liftGain;
+    if (std::fabs(contrast - 1.0f) <= 1e-4f) return v;
+    if (v <= 0.0f) return 0.0f;
+    return std::pow(v, contrast) * pivotScale;
+  }
+
+  // The uniform factor applied to linear RGB. Scaling all three channels by
+  // the same number is what keeps chromaticity intact: a per-channel power law
+  // would spread the channel ratios apart and silently raise saturation.
+  float rgbScale(float lHdr) const {
+    if (lHdr <= 1e-8f) return 0.0f;
+    return shapedLuminance(lHdr) / lHdr;
+  }
+};
+
+SdrShaper makeShaper(const PipelineOptions& o, float maxBoost) {
+  SdrShaper s;
+  s.op = o.toneMap;
+  s.toneCeiling = std::max(1.0001f, std::pow(2.0f, maxBoost));
+  // The lift is an explicit exposure gain on the tone-mapped result, not a
+  // reduced tone-curve ceiling. Reducing the ceiling is how a Reinhard-with-
+  // white-point curve is usually lifted, but its `1 + L/ceiling^2` term is
+  // within a rounding error of 1 through the midtones: measured, shrinking the
+  // ceiling by 0.43 EV moved mid grey by 0.001 EV. An exposure gain does what
+  // it says — +0.43 EV means +0.43 EV at mid grey — and produces the same
+  // end result, since highlights pushed past 1.0 clip in the 8-bit base and
+  // are handed back by the gain map, which is measured per pixel against the
+  // base as actually written.
+  s.liftGain = std::pow(2.0f, std::max(0.0f, o.sdrLiftEV));
+  s.contrast = o.sdrContrast;
+  constexpr float kPivot = 0.18f;  // linear-light mid grey
+  s.pivotScale = std::pow(kPivot, 1.0f - o.sdrContrast);
+  return s;
+}
+
+// The most negative gain the shaped base can call for. Once the base is
+// lifted it is brighter than the HDR image through the midtones, so the gain
+// map has to be able to darken as well as brighten; a floor pinned at 0 would
+// clamp those pixels and reconstruct them too bright.
+//
+// Swept analytically rather than measured from the image: the mapping from HDR
+// luminance to shaped SDR luminance is one-dimensional, so a dense sweep finds
+// the true extreme with no extra pass over the pixels and no dependence on
+// whether a downscale happened to catch the right pixel.
+float computeGainFloor(const SdrShaper& shaper, const PipelineOptions& o,
+                       float maxBoost, bool multiChannel) {
+  const float ceiling = std::pow(2.0f, maxBoost);
+  float floorLog2 = 0.0f;
+  constexpr int kSteps = 4096;
+  for (int i = 0; i <= kSteps; ++i) {
+    // Log-spaced from deep shadow to the ceiling.
+    const float t = static_cast<float>(i) / kSteps;
+    const float l = std::pow(2.0f, -20.0f + t * (20.0f + maxBoost));
+    if (l > ceiling) break;
+    const float k = shaper.rgbScale(l);
+    const float sdr = std::min(1.0f, shaper.shapedLuminance(l));
+    floorLog2 = std::min(floorLog2,
+                         std::log2((l + o.offsetHdr) / (sdr + o.offsetSdr)));
+    if (multiChannel && k > 0.0f) {
+      // A single channel is most negative right where it reaches 1.0, since
+      // below that the shaped value grows faster than the HDR value.
+      const float h = std::min(ceiling, 1.0f / k);
+      const float s = std::min(1.0f, h * k);
+      floorLog2 = std::min(floorLog2,
+                           std::log2((h + o.offsetHdr) / (s + o.offsetSdr)));
+    }
+  }
+  // Keep the floor in the territory real captures occupy rather than letting
+  // the sweep's extreme define it: an iPhone 17 writes about -0.49 EV, and
+  // Lightroom's own export -0.39 to -0.46 EV.
+  return std::max(-1.0f, floorLog2);
+}
+
 struct Resolved {
   ColorPrimaries primaries;
   TransferFunction transfer;
@@ -93,6 +178,17 @@ bool parseToneMap(const std::string& s, ToneMapOperator* out) {
   return true;
 }
 
+bool parsePeakDetect(const std::string& s, PeakDetect* out) {
+  if (s == "softened" || s == "soft") *out = PeakDetect::Softened;
+  else if (s == "exact" || s == "peak") *out = PeakDetect::Exact;
+  else return false;
+  return true;
+}
+
+const char* peakDetectName(PeakDetect p) {
+  return p == PeakDetect::Exact ? "exact" : "softened";
+}
+
 const char* toneMapName(ToneMapOperator t) {
   switch (t) {
     case ToneMapOperator::Filmic: return "filmic";
@@ -138,49 +234,106 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
   band = std::max<uint32_t>(band, static_cast<uint32_t>(sub));
   const uint32_t bandCount = (h + band - 1) / band;
 
-  // Pass 1 (optional): sample the image on a coarse grid to learn how much
-  // headroom the content actually uses, so the gain map spends its 8 bits on
-  // the range in use rather than on the user's worst-case target.
+  // Pass 1: how much headroom does the content actually use?
+  //
+  // Every pixel is folded into a box-averaged downscale, and the peak is taken
+  // from that. Averaging cuts both ways deliberately: a lone hot pixel or a
+  // speck of sensor noise cannot define the headroom for the whole frame, and
+  // — unlike sampling a grid of pixels, which this replaces — a small specular
+  // highlight can never be skipped over entirely, because it always raises the
+  // block that contains it.
   float maxBoost = opts.targetHeadroom;
   float measured = 0.0f;
+  float truePeak = 0.0f;
   {
-    const uint32_t step = std::max<uint32_t>(1, h / 512);
-    std::atomic<uint32_t> maxScaled{0};  // fixed point x1000, for a lock-free max
-    const uint32_t sampleRows = (h + step - 1) / step;
-    parallelFor(sampleRows, opts.threads, [&](size_t i) {
-      const uint32_t y = static_cast<uint32_t>(i) * step;
-      std::vector<float> row(static_cast<size_t>(w) * inChannels);
-      tiff.readRows(y, 1, row.data());
-      float localMax = 0.0f;
-      const uint32_t xStep = std::max<uint32_t>(1, w / 512);
-      for (uint32_t x = 0; x < w; x += xStep) {
-        float rgb[3];
-        for (uint32_t c = 0; c < 3; ++c) {
-          float v = row[static_cast<size_t>(x) * inChannels +
-                        (inChannels == 1 ? 0 : c)];
-          rgb[c] = decodeTransfer(in.transfer, v, opts.pqDiffuseWhiteNits);
+    const uint32_t longEdge = std::max(w, h);
+    // Roughly a 2048-pixel long edge, and always at least 2x2 on anything
+    // bigger than a thumbnail, so there is some averaging even when small.
+    uint32_t blockSize = (longEdge + 2047u) / 2048u;
+    if (longEdge > 512) blockSize = std::max<uint32_t>(blockSize, 2);
+    blockSize = std::max<uint32_t>(blockSize, 1);
+    if (opts.peakDetect == PeakDetect::Exact) blockSize = 1;
+
+    const uint32_t blocksX = (w + blockSize - 1) / blockSize;
+
+    // Output-space luminance as a function of the *input* primaries, so the
+    // measurement pass never has to build a converted RGB triple.
+    double inputLumWeights[3];
+    for (int c = 0; c < 3; ++c) {
+      inputLumWeights[c] = identityMatrix
+                               ? lw[c]
+                               : lw[0] * toOutput.m[0][c] +
+                                     lw[1] * toOutput.m[1][c] +
+                                     lw[2] * toOutput.m[2][c];
+    }
+    const double inputLumWeightSum =
+        inputLumWeights[0] + inputLumWeights[1] + inputLumWeights[2];
+
+    // Read in whole strips or tiles, not one block row at a time: readRows
+    // decodes every segment its range touches, so a 4-row read against a
+    // 32-row strip layout would decode each strip eight times over.
+    uint32_t readRows = tiff.suggestedBandRows();
+    if (readRows == 0) readRows = blockSize * 16;
+    readRows = ((readRows + blockSize - 1) / blockSize) * blockSize;
+    readRows = std::max(readRows, blockSize);
+    const uint32_t readBands = (h + readRows - 1) / readRows;
+
+    std::vector<float> blockPeak(readBands, 0.0f);
+    std::vector<float> pixelPeak(readBands, 0.0f);
+
+    parallelFor(readBands, opts.threads, [&](size_t bi) {
+      const uint32_t y0 = static_cast<uint32_t>(bi) * readRows;
+      const uint32_t rows = std::min(readRows, h - y0);
+      std::vector<float> src(static_cast<size_t>(rows) * w * inChannels);
+      tiff.readRows(y0, rows, src.data());
+
+      const uint32_t blockRowsHere = (rows + blockSize - 1) / blockSize;
+      std::vector<double> sums(static_cast<size_t>(blockRowsHere) * blocksX, 0.0);
+      std::vector<uint32_t> counts(static_cast<size_t>(blockRowsHere) * blocksX, 0);
+      float localPixelPeak = 0.0f;
+
+      for (uint32_t r = 0; r < rows; ++r) {
+        const float* srow = src.data() + static_cast<size_t>(r) * w * inChannels;
+        double* sumRow = sums.data() + static_cast<size_t>(r / blockSize) * blocksX;
+        uint32_t* cntRow =
+            counts.data() + static_cast<size_t>(r / blockSize) * blocksX;
+        for (uint32_t x = 0; x < w; ++x) {
+          // Only luminance is needed here, so the primaries matrix is folded
+          // into the weights: one dot product instead of a 3x3 multiply.
+          float l = 0.0f;
+          if (inChannels == 1) {
+            l = static_cast<float>(inputLumWeightSum) *
+                decodeTransfer(in.transfer, srow[x], opts.pqDiffuseWhiteNits);
+          } else {
+            const float* p = srow + static_cast<size_t>(x) * inChannels;
+            for (int c = 0; c < 3; ++c)
+              l += static_cast<float>(inputLumWeights[c]) *
+                   decodeTransfer(in.transfer, p[c], opts.pqDiffuseWhiteNits);
+          }
+          if (l < 0.0f) l = 0.0f;
+          sumRow[x / blockSize] += l;
+          ++cntRow[x / blockSize];
+          localPixelPeak = std::max(localPixelPeak, l);
         }
-        double o[3];
-        if (identityMatrix) {
-          o[0] = rgb[0]; o[1] = rgb[1]; o[2] = rgb[2];
-        } else {
-          auto v = toOutput.apply({rgb[0], rgb[1], rgb[2]});
-          o[0] = v[0]; o[1] = v[1]; o[2] = v[2];
-        }
-        double l = std::max(0.0, lw[0] * o[0] + lw[1] * o[1] + lw[2] * o[2]);
-        localMax = std::max(localMax, static_cast<float>(l));
       }
-      uint32_t scaled = static_cast<uint32_t>(
-          std::lround(std::min(1000.0f, localMax) * 1000.0f));
-      uint32_t prev = maxScaled.load(std::memory_order_relaxed);
-      while (scaled > prev &&
-             !maxScaled.compare_exchange_weak(prev, scaled,
-                                              std::memory_order_relaxed)) {
+
+      float bandPeak = 0.0f;
+      for (size_t b = 0; b < sums.size(); ++b) {
+        if (counts[b] == 0) continue;
+        bandPeak = std::max(bandPeak, static_cast<float>(sums[b] / counts[b]));
       }
+      blockPeak[bi] = bandPeak;
+      pixelPeak[bi] = localPixelPeak;
     });
-    float peak = static_cast<float>(maxScaled.load()) / 1000.0f;
+
+    float peak = 0.0f;
+    for (uint32_t bi = 0; bi < readBands; ++bi) {
+      peak = std::max(peak, blockPeak[bi]);
+      truePeak = std::max(truePeak, pixelPeak[bi]);
+    }
     measured = peak > 1.0f ? std::log2(peak) : 0.0f;
     res.measuredHeadroom = measured;
+    res.truePeakHeadroom = truePeak > 1.0f ? std::log2(truePeak) : 0.0f;
     if (opts.autoMaxBoost) {
       // Leave a sixth of a stop of slack for interpolation and rounding.
       maxBoost = std::min(opts.targetHeadroom, measured + 1.0f / 6.0f);
@@ -189,12 +342,16 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
   }
   if (maxBoost <= 0.0f) maxBoost = 1e-4f;  // keep the encoding well defined
 
-  // The tone curve and the gain map share one ceiling, so the highlights the
-  // curve compresses are exactly the ones the gain map can restore.
+  // The HDR clamp and the gain map share one ceiling, so every highlight the
+  // base image gives up is one the gain map can hand back.
   const float lmax = std::pow(2.0f, maxBoost);
+  const SdrShaper shaper = makeShaper(opts, maxBoost);
+  const float minBoost =
+      computeGainFloor(shaper, opts, maxBoost, opts.multiChannelGainMap);
 
+  res.declaredHeadroom = maxBoost;
   for (int c = 0; c < 3; ++c) {
-    res.minBoostLog2[c] = 0.0f;
+    res.minBoostLog2[c] = minBoost;
     res.maxBoostLog2[c] = maxBoost;
   }
 
@@ -203,7 +360,7 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
                   0);
 
   const float invGamma = 1.0f / opts.gainMapGamma;
-  const float boostRange = maxBoost;  // min boost is 0 by construction
+  const float boostRange = maxBoost - minBoost;
 
   parallelFor(bandCount, opts.threads, [&](size_t bi) {
     const uint32_t y0 = static_cast<uint32_t>(bi) * band;
@@ -247,8 +404,9 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
         const float lHdr = std::max(0.0f, static_cast<float>(
                                               lw[0] * hdr[0] + lw[1] * hdr[1] +
                                               lw[2] * hdr[2]));
-        const float lSdr = toneMapLuminance(opts.toneMap, lHdr, lmax);
-        const float scale = lHdr > 1e-8f ? lSdr / lHdr : 0.0f;
+        // Tone curve, lift and contrast collapse into one scale on RGB, so
+        // the base image's chromaticity matches the HDR image's exactly.
+        const float scale = shaper.rgbScale(lHdr);
 
         float sdr[3];
         for (int c = 0; c < 3; ++c)
@@ -264,7 +422,12 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
                      (static_cast<size_t>(gr) * res.gainWidth + gx) *
                          gainChannels;
         if (gainChannels == 1) {
-          // Single achromatic channel: the luminance ratio the decoder needs.
+          // Single achromatic channel: the luminance ratio the decoder needs,
+          // measured against the base image as actually written — shaping and
+          // per-channel clipping included.
+          const float lSdr = std::min(1.0f, std::max(0.0f,
+              static_cast<float>(lw[0] * sdr[0] + lw[1] * sdr[1] +
+                                 lw[2] * sdr[2])));
           float g = std::log2((lHdr + opts.offsetHdr) /
                               (lSdr + opts.offsetSdr));
           acc[0] += g;
@@ -287,7 +450,7 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
                            gainChannels;
         for (int c = 0; c < gainChannels; ++c) {
           float g = accum[idx * gainChannels + c] / n;
-          float norm = boostRange > 0.0f ? g / boostRange : 0.0f;
+          float norm = boostRange > 0.0f ? (g - minBoost) / boostRange : 0.0f;
           norm = std::min(1.0f, std::max(0.0f, norm));
           dst[c] = static_cast<uint8_t>(
               std::lround(std::pow(norm, invGamma) * 255.0f));

@@ -193,7 +193,7 @@ void reconstructedHdrMatchesTheSource() {
 
   const Mat3 toOutput =
       conversionMatrix(ColorPrimaries::ProPhoto, ColorPrimaries::DisplayP3);
-  const float minBoost = 0.0f;
+  const float minBoost = report.minBoostLog2;
   const float maxBoost = report.maxBoostLog2;
 
   double sumRel = 0;
@@ -241,6 +241,102 @@ void reconstructedHdrMatchesTheSource() {
                       " exceeds 15%");
 }
 
+// Shaping the SDR base changes the fallback rendition, and must leave the HDR
+// rendition alone — the gain map is measured against whatever base the shaping
+// produces, so the two have to cancel out.
+void sdrShapingLeavesTheHdrRenditionAlone() {
+  TiffSpec spec;
+  spec.width = 192;
+  spec.height = 144;
+  spec.bitsPerSample = 32;
+  spec.floatSamples = true;
+  auto source = makeHdrPattern(spec.width, spec.height, 6.0f);
+  std::string in = std::string(ISO21496_TEST_TMPDIR) + "/shaping.tif";
+  writeFile(in, makeTiff(spec, source));
+
+  auto renderHdrLuminance = [&](float lift, float contrast,
+                                double* midGreySdr) {
+    EncoderOptions o;
+    o.inputPath = in;
+    o.outputPath = std::string(ISO21496_TEST_TMPDIR) + "/shaping.jpg";
+    o.inputTransfer = TransferFunction::Linear;
+    o.inputPrimaries = ColorPrimaries::sRGB;
+    o.outputPrimaries = ColorPrimaries::sRGB;
+    o.gainMapSubsample = 1;
+    o.quality = 98;
+    o.gainMapQuality = 98;
+    o.sdrLiftEV = lift;
+    o.sdrContrast = contrast;
+    EncodeReport report;
+    Bytes file = encodeToMemory(o, &report);
+    Decoded base =
+        decode(Bytes(file.begin(), file.begin() + report.primaryBytes));
+    Decoded gain =
+        decode(Bytes(file.begin() + report.primaryBytes, file.end()));
+    CHECK(base.ok);
+    CHECK(gain.ok);
+
+    std::vector<double> lum(static_cast<size_t>(base.width) * base.height, 0.0);
+    const double wgt[3] = {0.2126, 0.7152, 0.0722};
+    double sdrSum = 0;
+    size_t sdrCount = 0;
+    for (size_t i = 0; i < lum.size(); ++i) {
+      float g = gain.pixels[i] / 255.0f;
+      float gainLog2 = report.minBoostLog2 +
+                       (report.maxBoostLog2 - report.minBoostLog2) *
+                           std::pow(g, o.gainMapGamma);
+      double y = 0, sdrY = 0;
+      for (int c = 0; c < 3; ++c) {
+        float sdrLinear = decodeSrgb(base.pixels[i * 3 + c] / 255.0f);
+        sdrY += wgt[c] * sdrLinear;
+        y += wgt[c] * std::max(0.0f, (sdrLinear + o.offsetSdr) *
+                                             std::exp2(gainLog2) -
+                                         o.offsetHdr);
+      }
+      lum[i] = y;
+      // The flat 0.18 region of the pattern, for a level reading.
+      if (y > 0.15 && y < 0.21) {
+        sdrSum += sdrY;
+        ++sdrCount;
+      }
+    }
+    if (midGreySdr) *midGreySdr = sdrCount ? sdrSum / sdrCount : 0.0;
+    return lum;
+  };
+
+  double plainMid = 0, shapedMid = 0;
+  auto plain = renderHdrLuminance(0.0f, 1.0f, &plainMid);
+  auto shaped = renderHdrLuminance(0.43f, 1.14f, &shapedMid);
+  CHECK_EQ(plain.size(), shaped.size());
+
+  double sumEV = 0, maxEV = 0;
+  size_t n = 0;
+  for (size_t i = 0; i < plain.size(); ++i) {
+    if (plain[i] < 0.02 || shaped[i] < 0.02) continue;
+    double d = std::fabs(std::log2(shaped[i] / plain[i]));
+    sumEV += d;
+    maxEV = std::max(maxEV, d);
+    ++n;
+  }
+  CHECK(n > 1000);
+  const double meanEV = sumEV / n;
+  if (meanEV > 0.03)
+    reportFailure(__FILE__, __LINE__,
+                  "shaping moved the HDR rendition by " +
+                      std::to_string(meanEV) + " EV on average");
+  if (maxEV > 0.15)
+    reportFailure(__FILE__, __LINE__,
+                  "shaping moved one HDR pixel by " + std::to_string(maxEV) +
+                      " EV");
+
+  // ...while the SDR base itself does move, which is the entire point.
+  if (!(shapedMid > plainMid * 1.08))
+    reportFailure(__FILE__, __LINE__,
+                  "the lift did not brighten the SDR base (" +
+                      std::to_string(plainMid) + " -> " +
+                      std::to_string(shapedMid) + ")");
+}
+
 void run() {
   decodesOurOutput(64, 64, 3, 95, false, true);
   decodesOurOutput(53, 41, 3, 90, true, true);
@@ -249,6 +345,7 @@ void run() {
   decodesOurOutput(8, 8, 3, 60, true, true);
   decodesBothImagesOfAnExport();
   reconstructedHdrMatchesTheSource();
+  sdrShapingLeavesTheHdrRenditionAlone();
 }
 
 }  // namespace

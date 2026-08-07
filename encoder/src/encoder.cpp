@@ -1,5 +1,6 @@
 #include "encoder.h"
 
+#include <algorithm>
 #include <chrono>
 
 #include "exif.h"
@@ -42,6 +43,9 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
   po.offsetHdr = opt.offsetHdr;
   po.toneMap = opt.toneMap;
   po.autoMaxBoost = opt.autoMaxBoost;
+  po.peakDetect = opt.peakDetect;
+  po.sdrLiftEV = opt.sdrLiftEV;
+  po.sdrContrast = opt.sdrContrast;
   po.threads = opt.threads;
 
   // Lift the Exif out first: once the pipeline has run we can drop the whole
@@ -57,14 +61,22 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
 
   PipelineResult px = runPipeline(tiff, po);
   tiff.releaseFileData();
-  logf("tone mapped with %s; measured headroom %.2f stops, gain map max %.2f",
-       toneMapName(opt.toneMap), px.measuredHeadroom, px.maxBoostLog2[0]);
+  logf("tone mapped with %s (lift %.2f EV, contrast %.2f); headroom %.2f "
+       "stops softened / %.2f true; gain map %.2f to %.2f EV",
+       toneMapName(opt.toneMap), opt.sdrLiftEV, opt.sdrContrast,
+       px.measuredHeadroom, px.truePeakHeadroom, px.minBoostLog2[0],
+       px.maxBoostLog2[0]);
 
   GainMapMetadata meta;
   meta.multiChannel = opt.multiChannelGainMap;
   meta.useBaseColorSpace = true;
   meta.baseHeadroom = 0.0f;
-  meta.alternateHeadroom = opt.targetHeadroom;
+  // The headroom the image actually needs, not the user's ceiling. A decoder
+  // applies the gain scaled by display_headroom / alternate_headroom, so
+  // declaring the ceiling here would make every display with less headroom
+  // than that ceiling render the photo dimmer than intended — even when it has
+  // more than enough headroom for this particular image.
+  meta.alternateHeadroom = std::max(px.declaredHeadroom, 0.05f);
   for (int c = 0; c < 3; ++c) {
     meta.minBoost[c] = px.minBoostLog2[c];
     meta.maxBoost[c] = px.maxBoostLog2[c];
@@ -148,8 +160,11 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
     report->primaryBytes = primarySize;
     report->gainMapBytes = gainMapJpeg.size();
     report->totalBytes = file.size();
+    report->minBoostLog2 = px.minBoostLog2[0];
     report->maxBoostLog2 = px.maxBoostLog2[0];
+    report->declaredHeadroom = meta.alternateHeadroom;
     report->measuredHeadroom = px.measuredHeadroom;
+    report->truePeakHeadroom = px.truePeakHeadroom;
     report->inputPrimaries = primariesName(px.resolvedInputPrimaries);
     report->inputTransfer = transferName(px.resolvedInputTransfer);
     report->seconds =

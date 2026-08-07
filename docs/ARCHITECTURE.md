@@ -28,8 +28,9 @@ debugged entirely on its own.
                                    │
                      ┌─────────────┴─────────────┐
                      ▼                           ▼
-              toneMapLuminance             log2 gain per pixel
-              → SDR base (8-bit)           → gain map (8-bit, subsampled)
+              tone map + lift +            log2 gain per pixel,
+              contrast → SDR base          measured against that base
+              (8-bit)                      → gain map (8-bit, subsampled)
                      │                           │
                      ▼                           ▼
               encodeJpeg + ICC             encodeJpeg + ISO 21496-1 APP2
@@ -75,24 +76,60 @@ bands of rows sized to the TIFF's own strip height so nothing is decompressed
 twice. Each band is processed on its own thread.
 
 For each pixel: decode to linear, convert primaries, clamp to
-`[0, 2^maxBoost]`, tone map the luminance, scale RGB by the resulting ratio,
-and encode to 8-bit sRGB. The gain is `log2((hdr + offsetHdr) / (sdr +
+`[0, 2^maxBoost]`, shape the luminance, scale RGB by the resulting ratio, and
+encode to 8-bit sRGB. The gain is `log2((hdr + offsetHdr) / (sdr +
 offsetSdr))` — on luminance for a monochrome map, per channel for an RGB one —
-box-averaged over the subsampling block, normalised against the maximum boost,
+box-averaged over the subsampling block, normalised against the boost range,
 and raised to `1/gamma` before quantising to 8 bits.
 
-The default tone curve is extended Reinhard, chosen because it is the identity
-in the shadows and midtones and maps the maximum HDR value to exactly 1.0. That
-last property matters: the tone curve's ceiling and the gain map's maximum
-boost are the same number, so every highlight the curve compresses is one the
-gain map can restore, with nothing clipped and no range wasted.
+The default tone curve is extended Reinhard, which maps the maximum HDR value
+to exactly 1.0. That matters: the HDR clamp and the gain map's maximum boost
+are the same number, so every highlight the base image gives up is one the gain
+map can hand back, with nothing clipped and no range wasted.
 
-**Auto max boost.** A cheap pass over a coarse grid (at most 512 × 512 samples)
-measures the headroom the image actually contains. Unless disabled, the gain
-map's maximum boost is set to that measurement plus a sixth of a stop of slack,
-rather than to the user's target. The target is still written as the metadata's
-alternate headroom, so decoders scale correctly; the effect is simply that the
-gain map's 8 bits cover the range in use.
+**The SDR base look.** The tone curve alone is not a good SDR rendition. Plain
+extended Reinhard puts mid grey at −0.24 EV relative to the source — measured,
+and near-constant across headrooms, because its `1 + L/ceiling^2` term is
+within a rounding error of 1 through the midtones. So the base is shaped:
+
+1. **Lift** — an exposure gain on the tone-mapped luminance, 0.43 EV by
+   default. Highlights pushed past 1.0 clip in the 8-bit base and are restored
+   by the gain map. (The usual way to lift a Reinhard-family curve is to shrink
+   its white point, which is what the reference implementation this borrows
+   from does with Apple's tone map. That does not transfer: measured against
+   this curve, shrinking the ceiling by 0.43 EV moved mid grey by 0.001 EV. An
+   explicit exposure gain does what it says.)
+2. **Contrast** — a power law about a 0.18 linear pivot, 1.14 by default,
+   applied as a luminance-derived *uniform scale on RGB*. A per-channel power
+   law would spread the channel ratios apart — for R > G, (R/G)^c > R/G — and
+   silently raise saturation along with contrast. Scaling all three channels by
+   one number leaves chromaticity untouched.
+
+Both shape the SDR base only. The gain map is measured against the base as
+actually written, shaping and per-channel clipping included, so the two cancel:
+measured, shaping moves the reconstructed HDR rendition by 0.008 EV on average.
+
+**Auto max boost.** Every pixel is folded into a box-averaged downscale
+(roughly a 2048-pixel long edge, always at least 2×2), and the peak is taken
+from that. Averaging cuts both ways deliberately: a lone hot pixel or a speck
+of sensor noise cannot define the headroom for the whole frame, and a small
+specular highlight can never be skipped over, because it always raises the
+block that contains it. `--peak-detect exact` uses the true per-pixel maximum
+instead. Only luminance is needed, so the primaries matrix is folded into the
+weights and the pass costs one dot product per pixel.
+
+Unless disabled, the gain map's maximum boost is that measurement plus a sixth
+of a stop of slack, rather than the user's target.
+
+**The gain floor.** Once the base is lifted it is brighter than the HDR image
+through the midtones, so the gain map has to darken as well as brighten; a
+floor pinned at 0 would clamp those pixels and reconstruct them too bright. The
+floor is found by sweeping the shaping function analytically — the mapping from
+HDR luminance to shaped SDR luminance is one-dimensional, so a dense sweep
+finds the true extreme with no extra pass over the pixels and no dependence on
+whether a downscale happened to catch the right pixel. It is clamped to −1 EV,
+keeping it in the territory real captures occupy (an iPhone 17 writes about
+−0.49 EV; Lightroom's own export −0.39 to −0.46 EV).
 
 ### Writing the JPEGs
 
@@ -128,6 +165,14 @@ The APP2 segment on the gain map image opens with the 28-byte
 | flags | `uint8`; bit 7 multichannel, bit 6 use-base-colour-space |
 | base / alternate HDR headroom | unsigned rational pairs |
 | per channel: min boost, max boost, gamma, base offset, alternate offset | signed or unsigned rational pairs |
+
+**Alternate headroom is the measured requirement, not the user's ceiling.** A
+decoder applies the gain scaled by
+`(display_headroom − base_headroom) / (alternate_headroom − base_headroom)`,
+clamped to 1. Writing the 4 EV ceiling into a photo that needs 1.6 EV would
+make a display with 2 EV of headroom apply half the gain — dim, despite having
+more headroom than the image needs. So the encoder declares what it measured;
+the user's setting remains a ceiling that caps it.
 
 **A deliberate deviation from the build spec.** Section 5.2 of the spec
 describes these values as `float32`. The published standard encodes them as
@@ -193,7 +238,7 @@ it depends on nothing.
 | `color` | White point adaptation, matrix round trips, transfer functions, ICC generation and detection |
 | `jpeg` | Marker structure, quality response, optimal tables, byte stuffing, APP segment chains |
 | `metadata` | ISO payload byte layout, MPF patching, XMP contents, Exif reconstruction |
-| `endtoend` | A full export parsed back apart: both images, MPF consistency, metadata values, error paths |
-| `decode` *(needs libjpeg)* | Our bitstream decoded by libjpeg, and the HDR image reconstructed from the result |
+| `endtoend` | A full export parsed back apart: both images, MPF consistency, declared headroom, gain floor, small-highlight survival, error paths |
+| `decode` *(needs libjpeg)* | Our bitstream decoded by libjpeg, the HDR image reconstructed from the result, and SDR shaping shown not to move it |
 | `exiftool_compliance` *(needs exiftool)* | The metadata audit from the build spec, run the way a reviewer would |
 | `plugin/tests/test_plugin.lua` *(needs Lua)* | The plug-in's settings, argument construction, shell quoting and report parsing, against the real binary |

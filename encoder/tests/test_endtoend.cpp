@@ -153,12 +153,25 @@ void fullExport() {
   CHECK_EQ(p.primaryEnd, report.primaryBytes);
 
   // Metadata values must reflect the requested settings.
-  CHECK_NEAR(p.iso.alternateHeadroom, 4.0, 1e-3);
   CHECK_NEAR(p.iso.baseHeadroom, 0.0, 1e-6);
   CHECK_NEAR(p.iso.gamma[0], 2.2, 1e-3);
   CHECK_NEAR(p.iso.baseOffset[0], 0.015625, 1e-4);
   CHECK(p.iso.maxBoost[0] > 2.0f && p.iso.maxBoost[0] <= 4.0f);
   CHECK_NEAR(report.measuredHeadroom, std::log2(6.0), 0.15);
+
+  // The declared alternate headroom must be what the image needs, not the
+  // 4.0 EV ceiling that was asked for. Declaring the ceiling would make a
+  // decoder scale the gain by display_headroom / 4.0 and render the photo
+  // dim on any display with less than 4 stops of headroom.
+  CHECK_NEAR(p.iso.alternateHeadroom, p.iso.maxBoost[0], 1e-3);
+  CHECK(p.iso.alternateHeadroom < 3.5f);
+  CHECK_NEAR(report.declaredHeadroom, report.maxBoostLog2, 1e-4);
+
+  // Lifting the base means it is brighter than the HDR image through the
+  // midtones, so the gain map has to be able to darken as well as brighten.
+  CHECK(report.minBoostLog2 < 0.0f);
+  CHECK(report.minBoostLog2 >= -1.0f);
+  CHECK_NEAR(p.iso.minBoost[0], report.minBoostLog2, 1e-3);
 }
 
 void multiChannelAndSubsampling() {
@@ -183,7 +196,46 @@ void multiChannelAndSubsampling() {
     CHECK_EQ(p.gainWidth, static_cast<uint32_t>((64 + sub - 1) / sub));
     CHECK_EQ(p.gainHeight, static_cast<uint32_t>((48 + sub - 1) / sub));
     CHECK_NEAR(p.iso.maxBoost[0], 4.0, 1e-3);  // auto max boost disabled
+    // With the measurement disabled, the declared headroom is the ceiling
+    // because that is genuinely what the gain map now spans.
+    CHECK_NEAR(p.iso.alternateHeadroom, 4.0, 1e-3);
   }
+}
+
+// A small specular highlight must survive: the headroom measurement averages
+// the image down, and a grid-sampling scheme could step straight over a glint
+// this size and clip it out of the HDR rendition entirely.
+void smallHighlightsAreNotMissed() {
+  const uint32_t w = 1024, h = 768;
+  std::vector<float> px(static_cast<size_t>(w) * h * 3, 0.18f);
+  // A 6x6 glint at 32x SDR white — 0.005% of the frame.
+  for (uint32_t y = 400; y < 406; ++y)
+    for (uint32_t x = 500; x < 506; ++x)
+      for (int c = 0; c < 3; ++c) px[(static_cast<size_t>(y) * w + x) * 3 + c] = 32.0f;
+
+  TiffSpec spec;
+  spec.width = w;
+  spec.height = h;
+  spec.bitsPerSample = 32;
+  spec.floatSamples = true;
+  std::string in = writeTempTiff(spec, px, "e2e_glint.tif");
+
+  EncoderOptions o;
+  o.inputPath = in;
+  o.outputPath = std::string(ISO21496_TEST_TMPDIR) + "/e2e_glint.jpg";
+  o.inputTransfer = TransferFunction::Linear;
+  o.inputPrimaries = ColorPrimaries::sRGB;
+  o.outputPrimaries = ColorPrimaries::sRGB;
+  o.targetHeadroom = 4.0f;
+  EncodeReport report;
+  encodeToMemory(o, &report);
+
+  // The glint is 5 stops up, so the true peak must see all of it...
+  CHECK_NEAR(report.truePeakHeadroom, 5.0, 0.05);
+  // ...and the softened measurement must still register it as real headroom
+  // rather than averaging it away into the 0.18 background.
+  CHECK(report.measuredHeadroom > 1.0f);
+  CHECK(report.maxBoostLog2 > 1.0f);
 }
 
 // The file-size benchmark from the spec: a mono 1:2 gain map must cost far
@@ -236,6 +288,7 @@ void reportsBadInputClearly() {
 void run() {
   fullExport();
   multiChannelAndSubsampling();
+  smallHighlightsAreNotMissed();
   gainMapOverheadIsSmall();
   reportsBadInputClearly();
 }

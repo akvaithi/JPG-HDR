@@ -18,11 +18,21 @@ IsoSettings.defaults = {
 	iso_jpeg_quality = 90,
 
 	-- Advanced controls, all with spec-conformant defaults.
-	iso_gainmap_quality = 85,
+	-- A gain map is a smooth luminance ratio, so JPEG artefacts in it are not
+	-- visually significant the way they are in the picture; 50 is what current
+	-- camera pipelines write and it costs roughly a third the bytes of 85.
+	iso_gainmap_quality = 50,
 	iso_gainmap_gamma = '2.2',
 	iso_tone_map = 'reinhard',
 	iso_auto_max_boost = true,
 	iso_chroma_subsample = true,
+	iso_peak_detect = 'softened',
+
+	-- Shaping of the SDR base image, i.e. the rendition seen without an HDR
+	-- display. The HDR result is unaffected: the gain map is measured against
+	-- whatever base these produce, so the two cancel out.
+	iso_sdr_lift = 0.43,
+	iso_sdr_contrast = 1.14,
 
 	-- How to read what Lightroom rendered.
 	iso_input_transfer = 'auto',
@@ -84,6 +94,11 @@ IsoSettings.toneMapItems = {
 	{ title = LOC '$$$/Iso21496/TmClip=Hard clip', value = 'clip' },
 }
 
+IsoSettings.peakDetectItems = {
+	{ title = LOC '$$$/Iso21496/PdSoft=Softened  (ignore a few hot pixels)', value = 'softened' },
+	{ title = LOC '$$$/Iso21496/PdExact=Exact peak', value = 'exact' },
+}
+
 IsoSettings.gammaItems = {
 	{ title = '1.0', value = '1.0' },
 	{ title = '2.2  (default)', value = '2.2' },
@@ -142,7 +157,10 @@ function IsoSettings.buildArguments(properties)
 		'--subsample', tostring(math.floor(clampNumber(p.iso_gainmap_subsample, 1, 4, 2))),
 		'--channels', (p.iso_gainmap_channels == 'RGB') and 'rgb' or 'mono',
 		'--quality', tostring(math.floor(clampNumber(p.iso_jpeg_quality, 1, 100, 90))),
-		'--gainmap-quality', tostring(math.floor(clampNumber(p.iso_gainmap_quality, 1, 100, 85))),
+		'--gainmap-quality', tostring(math.floor(clampNumber(p.iso_gainmap_quality, 1, 100, 50))),
+		'--sdr-lift', string.format('%.3f', clampNumber(p.iso_sdr_lift, 0, 3, 0.43)),
+		'--sdr-contrast', string.format('%.3f', clampNumber(p.iso_sdr_contrast, 0.5, 2, 1.14)),
+		'--peak-detect', tostring(p.iso_peak_detect or 'softened'),
 		'--gamma', tostring(clampNumber(p.iso_gainmap_gamma, 0.1, 8, 2.2)),
 		'--tone-map', tostring(p.iso_tone_map or 'reinhard'),
 		'--json',

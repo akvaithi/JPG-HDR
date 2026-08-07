@@ -149,6 +149,87 @@ function ExportDialogSections.advancedSection(f, properties)
 		},
 
 		f:row {
+			f:static_text {
+				title = LOC '$$$/Iso21496/SdrHeading=SDR base image look',
+				font = '<system/bold>',
+			},
+		},
+		f:row {
+			f:static_text {
+				title = LOC '$$$/Iso21496/SdrHint=Shapes only the fallback seen without an HDR display. The HDR rendition is unaffected — the gain map is measured against whatever base these produce.',
+				width_in_chars = 58,
+				height_in_lines = 2,
+				text_color = LrColor(0.4, 0.4, 0.4),
+			},
+		},
+		f:row {
+			spacing = f:label_spacing(),
+			f:static_text {
+				title = LOC '$$$/Iso21496/SdrLiftLabel=Brightness lift:',
+				alignment = 'right',
+				width = share 'iso_adv_label_width',
+			},
+			f:slider {
+				value = bind 'iso_sdr_lift',
+				min = 0,
+				max = 1.5,
+				width = 160,
+			},
+			f:edit_field {
+				value = bind 'iso_sdr_lift',
+				min = 0,
+				max = 3,
+				precision = 2,
+				width_in_digits = 5,
+			},
+			f:static_text { title = LOC '$$$/Iso21496/EV=EV' },
+		},
+		f:row {
+			spacing = f:label_spacing(),
+			f:static_text {
+				title = LOC '$$$/Iso21496/SdrContrastLabel=Contrast:',
+				alignment = 'right',
+				width = share 'iso_adv_label_width',
+			},
+			f:slider {
+				value = bind 'iso_sdr_contrast',
+				min = 0.8,
+				max = 1.5,
+				width = 160,
+			},
+			f:edit_field {
+				value = bind 'iso_sdr_contrast',
+				min = 0.5,
+				max = 2,
+				precision = 2,
+				width_in_digits = 5,
+			},
+			f:push_button {
+				title = LOC '$$$/Iso21496/SdrNeutral=Neutral',
+				action = function()
+					properties.iso_sdr_lift = 0
+					properties.iso_sdr_contrast = 1.0
+				end,
+			},
+		},
+
+		f:separator { fill_horizontal = 1 },
+
+		f:row {
+			spacing = f:label_spacing(),
+			f:static_text {
+				title = LOC '$$$/Iso21496/PeakDetectLabel=Highlight measurement:',
+				alignment = 'right',
+				width = share 'iso_adv_label_width',
+			},
+			f:popup_menu {
+				value = bind 'iso_peak_detect',
+				items = IsoSettings.peakDetectItems,
+				width_in_chars = 26,
+			},
+		},
+
+		f:row {
 			spacing = f:label_spacing(),
 			f:static_text {
 				title = LOC '$$$/Iso21496/GainQualityLabel=Gain map quality:',

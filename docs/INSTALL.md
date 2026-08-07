@@ -94,11 +94,15 @@ How far above SDR white the gain map is allowed to push, in stops:
 | +4.0 EV | ~1280 nits (default) |
 
 This is a ceiling, not a target. With *Fit the gain map range to the image* on
-(the default) the encoder measures how much headroom the photo actually uses
-and stores that as the gain map's maximum boost, which spends the gain map's
-8 bits where they matter. The headroom you pick is still written as the
-metadata's alternate headroom, so a display brighter than the image needs will
-not over-boost it.
+(the default) the encoder measures how much headroom the photo actually uses,
+stores that as the gain map's maximum boost, and declares it as the file's
+required headroom.
+
+That last part matters more than it sounds. A decoder applies the gain scaled
+by how much headroom the display has relative to what the file asks for. A
+photo that needs 1.6 stops but claims to need 4 would render at half strength
+on a display with 2 stops of headroom — plenty for that photo — so the file
+asks for what it measured.
 
 ### Base colour space
 
@@ -110,15 +114,15 @@ Android write. **sRGB** for maximum compatibility with old software, **Rec.
 ### Gain map resolution and channels
 
 A monochrome gain map at 1:2 is the default because it is nearly free: on a
-45 MP frame it adds about a quarter to the file size, where a full-resolution
-three-channel map adds over 80%. Choose **RGB** only if your highlights change
+45 MP frame it adds about 12% to the file size, where a full-resolution
+three-channel map adds around 45%. Choose **RGB** only if your highlights change
 hue as they brighten — coloured neon, stained glass, sunsets through smoke.
 
 ### Baseline JPEG quality
 
 Standard JPEG quality for the SDR image, 60 to 100. The gain map has its own
-quality setting in the Advanced section (default 85); it is a smooth control
-signal, so it tolerates more compression than the picture does.
+quality setting in the Advanced section (default 50); it is a smooth control
+signal, so it tolerates far more compression than the picture does.
 
 ### Advanced
 
@@ -127,6 +131,23 @@ signal, so it tolerates more compression than the picture does.
   the top end. *Filmic* rolls off earlier for a flatter look. *Hard clip*
   simply clips above white, which maximises SDR contrast and puts all the HDR
   information in the gain map.
+* **SDR base look** — *Brightness lift* (0.43 EV) and *Contrast* (1.14) shape
+  the SDR base, i.e. what everything without an HDR display shows. A plain tone
+  curve lands about a quarter stop dark and flat compared to a hand-graded SDR
+  edit; these correct for that. Neither changes the HDR rendition — the gain
+  map is measured against whatever base they produce. Press *Neutral* for an
+  unshaped base. These defaults are borrowed from a reference implementation
+  and were tuned on one photo and one photographer's taste, so treat them as a
+  starting point rather than a truth.
+* **Highlight measurement** — *Softened* (the default) averages the image down
+  before measuring its peak, so a few hot pixels or a speck of sensor noise
+  cannot define the headroom for the whole frame. *Exact peak* uses the true
+  per-pixel maximum; use it if you have a genuinely tiny highlight that matters
+  and you would rather spend gain map precision on it.
+* **Gain map quality** — 50 by default. A gain map is a smooth luminance ratio,
+  so JPEG artefacts in it are not visually significant the way they are in the
+  picture; 50 is what current camera pipelines write and costs roughly a third
+  the bytes of 85.
 * **Gain map gamma** — the encoding curve for the stored gain values, 2.2 by
   default per the build spec. Decoders read this from the metadata.
 * **Rendered encoding / primaries** — normally *Detect from the rendered file*,

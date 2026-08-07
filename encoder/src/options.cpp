@@ -26,12 +26,29 @@ const char kUsage[] =
     "  --channels <mono|rgb>    Gain map channels: mono (default) or rgb.\n"
     "  --quality <60-100>       Baseline JPEG quality (default 90).\n"
     "\n"
+    "SDR base image look (affects only the rendition seen without an HDR\n"
+    "display; the HDR result is unchanged, because the gain map is measured\n"
+    "against whatever base these produce):\n"
+    "  --sdr-lift <EV>          Brighten the base by this many stops. Applied\n"
+    "                           as an exposure gain on the tone-mapped image,\n"
+    "                           so highlights pushed past white clip in the\n"
+    "                           base and are handed back by the gain map\n"
+    "                           (default 0.43, 0 disables).\n"
+    "  --sdr-contrast <x>       Contrast about a linear mid-grey pivot,\n"
+    "                           applied as a luminance-derived scale on RGB so\n"
+    "                           saturation is untouched (default 1.14,\n"
+    "                           1.0 disables).\n"
+    "\n"
     "Gain map tuning:\n"
-    "  --gainmap-quality <n>    JPEG quality of the gain map (default 85).\n"
+    "  --gainmap-quality <n>    JPEG quality of the gain map (default 50).\n"
     "  --gamma <g>              Gain map encoding gamma (default 2.2).\n"
     "  --offset-sdr <v>         SDR offset constant (default 0.015625).\n"
     "  --offset-hdr <v>         HDR offset constant (default 0.015625).\n"
     "  --tone-map <name>        reinhard (default), filmic or clip.\n"
+    "  --peak-detect <name>     softened (default) averages the image down\n"
+    "                           before measuring its peak, so a few hot pixels\n"
+    "                           cannot define the headroom; exact uses the\n"
+    "                           true per-pixel maximum.\n"
     "  --no-auto-max-boost      Always store the full target headroom as the\n"
     "                           gain map maximum instead of measuring the\n"
     "                           headroom the image actually uses.\n"
@@ -141,6 +158,20 @@ bool parseArguments(int argc, char** argv, EncoderOptions* out, bool* handled) {
       needValue(argc, argv, i++, "--tone-map", &v);
       if (!parseToneMap(v, &out->toneMap))
         fail("unknown --tone-map: " + v + " (use reinhard, filmic or clip)");
+    } else if (a == "--peak-detect") {
+      needValue(argc, argv, i++, "--peak-detect", &v);
+      if (!parsePeakDetect(v, &out->peakDetect))
+        fail("unknown --peak-detect: " + v + " (use softened or exact)");
+    } else if (a == "--sdr-lift") {
+      needValue(argc, argv, i++, "--sdr-lift", &v);
+      out->sdrLiftEV = toFloat(v, "--sdr-lift");
+      if (out->sdrLiftEV < 0.0f || out->sdrLiftEV > 3.0f)
+        fail("--sdr-lift must be between 0 and 3 EV");
+    } else if (a == "--sdr-contrast") {
+      needValue(argc, argv, i++, "--sdr-contrast", &v);
+      out->sdrContrast = toFloat(v, "--sdr-contrast");
+      if (out->sdrContrast < 0.5f || out->sdrContrast > 2.0f)
+        fail("--sdr-contrast must be between 0.5 and 2.0");
     } else if (a == "--no-auto-max-boost") {
       out->autoMaxBoost = false;
     } else if (a == "--input-primaries") {

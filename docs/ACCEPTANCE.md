@@ -62,11 +62,11 @@ Note the encoding deviation from the spec's description of this payload
 
 | Configuration | Gain map | Overhead over the SDR base |
 |---|---|---|
-| Monochrome, 1:2 (default) | 0.74 MB | **+24.7%** |
-| RGB, 1:1 | 2.46 MB | +82.4% |
+| Monochrome, 1:2 (default) | 0.39 MB | **+12.2%** |
+| RGB, 1:1 | 1.43 MB | +44.7% |
 
-Within the required band, and a third the size of the three-channel
-full-resolution alternative. Reproduce it with:
+Comfortably under the required band, and a quarter the size of the
+three-channel full-resolution alternative. Reproduce it with:
 
 ```bash
 ./encoder/build/tests/make_fixture /tmp/big.tif 8192 5464 8.0 1
@@ -88,9 +88,17 @@ real photograph typically lands lower.
 **Automated, up to the point where real hardware takes over:** the `decode`
 test decodes both images with libjpeg, applies the stored gain map exactly as
 ISO 21496-1 specifies, and compares the reconstruction against the source HDR
-image — **0.47% mean error, 3.0% worst case in the highlights**. That
+image — **0.43% mean error, 2.4% worst case in the highlights**. That
 establishes the file is mathematically correct: any conforming decoder given
 these bytes reproduces the intended HDR image.
+
+A second test proves the SDR base look is free: encoding the same photo with
+and without the default lift and contrast moves the reconstructed HDR rendition
+by **0.008 EV on average**, while the SDR base itself moves as intended.
+
+The file also declares the headroom it measured rather than the user's ceiling,
+which is what makes a display with partial headroom render the photo at full
+strength instead of scaling the gain down. The `endtoend` test asserts it.
 
 **Needs real devices.** No amount of local testing substitutes for checking how
 a specific OS version treats a specific file. The checklist:
@@ -118,13 +126,18 @@ data in it, which is a Lightroom setting rather than an encoder bug.
 ## Also verified, beyond the spec
 
 * **HDR round trip.** Reconstruction from the encoded file matches the source
-  to 0.47% mean error (`decode` test).
+  to 0.43% mean error (`decode` test).
+* **SDR shaping is free.** The default brightness lift and contrast move the
+  reconstructed HDR rendition by 0.008 EV on average (`decode` test).
 * **Bitstream validity.** libjpeg decodes our output at every quality,
   subsampling mode and component count we emit; the entropy stream is checked
   for illegal unescaped `0xFF` bytes.
 * **Huffman table integrity.** A regression test covers the case where rare
   coefficient symbols initially receive codes longer than 16 bits — these must
   survive the length-limiting adjustment rather than being dropped.
-* **Performance.** 45 MP in 3.7 s on four cores, 678 MB peak.
+* **Performance.** 45 MP in 3.8 s on four cores, 678 MB peak.
+* **Small highlights survive.** A 6×6 specular glint five stops above white —
+  0.005% of a 1024×768 frame — still registers in the headroom measurement
+  rather than being averaged away or stepped over (`endtoend`).
 * **No runtime dependencies.** CI asserts the Linux binary links nothing beyond
   libc, libm and the loader, and that the macOS binary is universal.

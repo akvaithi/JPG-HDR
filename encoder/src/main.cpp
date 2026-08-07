@@ -22,12 +22,15 @@ int main(int argc, char** argv) {
       std::printf(
           "{\"ok\":true,\"width\":%u,\"height\":%u,\"gainWidth\":%u,"
           "\"gainHeight\":%u,\"gainChannels\":%d,\"primaryBytes\":%zu,"
-          "\"gainMapBytes\":%zu,\"totalBytes\":%zu,\"maxBoostLog2\":%.4f,"
-          "\"measuredHeadroom\":%.4f,\"inputPrimaries\":\"%s\","
+          "\"gainMapBytes\":%zu,\"totalBytes\":%zu,\"minBoostLog2\":%.4f,"
+          "\"maxBoostLog2\":%.4f,\"declaredHeadroom\":%.4f,"
+          "\"measuredHeadroom\":%.4f,\"truePeakHeadroom\":%.4f,"
+          "\"inputPrimaries\":\"%s\","
           "\"inputTransfer\":\"%s\",\"seconds\":%.3f}\n",
           r.width, r.height, r.gainWidth, r.gainHeight, r.gainChannels,
-          r.primaryBytes, r.gainMapBytes, r.totalBytes, r.maxBoostLog2,
-          r.measuredHeadroom, r.inputPrimaries.c_str(), r.inputTransfer.c_str(),
+          r.primaryBytes, r.gainMapBytes, r.totalBytes, r.minBoostLog2,
+          r.maxBoostLog2, r.declaredHeadroom, r.measuredHeadroom,
+          r.truePeakHeadroom, r.inputPrimaries.c_str(), r.inputTransfer.c_str(),
           r.seconds);
     }
     return 0;

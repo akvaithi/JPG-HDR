@@ -18,7 +18,10 @@ struct EncoderOptions {
   int gainMapSubsample = 2;
   bool multiChannelGainMap = false;
   int quality = 90;
-  int gainMapQuality = 85;
+  // Gain maps are smooth luminance ratios, so JPEG artefacts in them are not
+  // visually significant the way they are in the picture; 50 is what current
+  // camera pipelines use and it costs roughly a third the bytes of 85.
+  int gainMapQuality = 50;
 
   float gainMapGamma = 2.2f;
   float offsetSdr = 1.0f / 64.0f;
@@ -29,6 +32,9 @@ struct EncoderOptions {
   float pqDiffuseWhiteNits = 203.0f;
   ToneMapOperator toneMap = ToneMapOperator::Reinhard;
   bool autoMaxBoost = true;
+  PeakDetect peakDetect = PeakDetect::Softened;
+  float sdrLiftEV = 0.43f;
+  float sdrContrast = 1.14f;
 
   bool writeIcc = true;
   bool writeExif = true;

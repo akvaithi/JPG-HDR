@@ -69,6 +69,10 @@ local function testDefaults()
 	checkEqual(p.iso_gainmap_subsample, '2', 'default gain map subsampling is 1:2')
 	checkEqual(p.iso_gainmap_channels, 'Monochrome', 'default gain map is monochrome')
 	checkEqual(p.iso_jpeg_quality, 90, 'default JPEG quality is 90')
+	checkEqual(p.iso_gainmap_quality, 50, 'default gain map quality is 50')
+	checkEqual(p.iso_sdr_lift, 0.43, 'default SDR lift is 0.43 EV')
+	checkEqual(p.iso_sdr_contrast, 1.14, 'default SDR contrast is 1.14')
+	checkEqual(p.iso_peak_detect, 'softened', 'highlight measurement is softened')
 
 	local fields = IsoSettings.exportPresetFields()
 	local seen = {}
@@ -89,6 +93,25 @@ local function testArguments()
 	check(args:find('--quality 90'), 'arguments carry the quality')
 	check(args:find('--json'), 'arguments request the JSON report')
 	check(not args:find('--no%-auto%-max%-boost'), 'auto max boost is on by default')
+	check(args:find('--gainmap%-quality 50'), 'arguments carry the gain map quality')
+	check(args:find('--sdr%-lift 0%.430'), 'arguments carry the SDR lift')
+	check(args:find('--sdr%-contrast 1%.140'), 'arguments carry the SDR contrast')
+	check(args:find('--peak%-detect softened'), 'arguments carry the peak detection mode')
+
+	-- A neutral base must be reachable, and must stay neutral on the wire.
+	local neutral = join(IsoSettings.buildArguments {
+		iso_sdr_lift = 0, iso_sdr_contrast = 1.0,
+	})
+	check(neutral:find('--sdr%-lift 0%.000'), 'the lift can be switched off')
+	check(neutral:find('--sdr%-contrast 1%.000'), 'the contrast can be switched off')
+
+	-- Out-of-range shaping values must be clamped to what the encoder accepts,
+	-- which rejects anything outside 0-3 EV and 0.5-2.0.
+	local wild = join(IsoSettings.buildArguments {
+		iso_sdr_lift = 99, iso_sdr_contrast = 9,
+	})
+	check(wild:find('--sdr%-lift 3%.000'), 'the lift is clamped to 3 EV')
+	check(wild:find('--sdr%-contrast 2%.000'), 'the contrast is clamped to 2.0')
 
 	local custom = IsoSettings.buildArguments {
 		iso_target_headroom = '2.0',
@@ -173,6 +196,16 @@ local function testRealEncode(fixtureTiff)
 	check(report ~= nil, 'the encoder returned a report')
 	checkEqual(report.gainChannels, 1, 'report says the gain map is monochrome')
 	check(report.totalBytes > 0, 'report says bytes were written')
+
+	-- The file must declare the headroom it needs, not the 4 EV ceiling the
+	-- default settings allow: a decoder scales the gain it applies by
+	-- display_headroom / declared_headroom.
+	check(report.declaredHeadroom ~= nil and
+		math.abs(report.declaredHeadroom - report.maxBoostLog2) < 0.001,
+		'declared headroom matches the measured gain map maximum ('
+			.. tostring(report.declaredHeadroom) .. ')')
+	check(report.declaredHeadroom < 4.0, 'declared headroom is below the ceiling')
+	check(report.minBoostLog2 < 0, 'the lifted base gives the gain map a negative floor')
 
 	local f = io.open(out, 'rb')
 	local data = f:read('a')

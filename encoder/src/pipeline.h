@@ -14,6 +14,13 @@ enum class ToneMapOperator { Reinhard, Filmic, Clip };
 bool parseToneMap(const std::string& s, ToneMapOperator* out);
 const char* toneMapName(ToneMapOperator t);
 
+// How the image's peak highlight is measured. `Softened` averages the image
+// down first, so a handful of hot pixels cannot define the headroom for the
+// whole frame; `Exact` uses the true per-pixel maximum.
+enum class PeakDetect { Softened, Exact };
+bool parsePeakDetect(const std::string& s, PeakDetect* out);
+const char* peakDetectName(PeakDetect p);
+
 struct PipelineOptions {
   ColorPrimaries outputPrimaries = ColorPrimaries::DisplayP3;
   ColorPrimaries inputPrimaries = ColorPrimaries::Auto;
@@ -27,6 +34,14 @@ struct PipelineOptions {
   float offsetHdr = 1.0f / 64.0f;
   ToneMapOperator toneMap = ToneMapOperator::Reinhard;
   bool autoMaxBoost = true;      // shrink max boost to what the image needs
+  PeakDetect peakDetect = PeakDetect::Softened;
+
+  // Shaping applied to the SDR base image only. The gain map is measured
+  // against whatever base these produce, so the HDR rendition is unaffected;
+  // what changes is the fallback seen without an HDR display.
+  float sdrLiftEV = 0.43f;     // 0 disables
+  float sdrContrast = 1.14f;   // 1.0 disables
+
   unsigned threads = 0;
 };
 
@@ -41,10 +56,16 @@ struct PipelineResult {
   // Metadata values that end up in the ISO 21496-1 payload.
   float minBoostLog2[3] = {0, 0, 0};
   float maxBoostLog2[3] = {0, 0, 0};
+  // The headroom the file declares it needs. This is the measured requirement,
+  // not the user's ceiling: a decoder scales the gain it applies by
+  // display_headroom / declared_headroom, so declaring more than the image
+  // needs makes it render dim on any display with partial headroom.
+  float declaredHeadroom = 0.0f;
   // Diagnostics for --verbose / --json.
   ColorPrimaries resolvedInputPrimaries = ColorPrimaries::sRGB;
   TransferFunction resolvedInputTransfer = TransferFunction::sRGB;
-  float measuredHeadroom = 0.0f;
+  float measuredHeadroom = 0.0f;   // softened peak, in stops
+  float truePeakHeadroom = 0.0f;   // true per-pixel peak, in stops
 };
 
 PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts);

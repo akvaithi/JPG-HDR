@@ -52,10 +52,33 @@ The five controls from section 3.1 of the spec, with their defaults:
 | Gain map channels | Monochrome / RGB | **Monochrome** |
 | Baseline JPEG quality | 60–100 | **90** |
 
-An *Advanced* section adds tone mapping operator, gain map quality and gamma,
+The headroom setting is a *ceiling*, not a target: the encoder measures what
+the photo actually needs and declares that, so displays with partial headroom
+render it at full strength rather than scaling the effect down.
+
+An *Advanced* section adds the SDR base look (brightness lift and contrast),
+tone mapping operator, gain map quality and gamma, highlight measurement mode,
 metadata copying, and overrides for how the rendered intermediate is
 interpreted. Everything is also reachable from the command line —
 `iso21496_encoder --help`.
+
+### The SDR base look
+
+A gain map file carries two renditions. The HDR one is fixed by the photo; the
+SDR one — what everything without an HDR display shows — is a choice. A plain
+tone curve lands about a quarter of a stop under where a hand-graded SDR edit
+of the same photo would sit, and flatter, so the base is shaped by default:
+
+| Control | Default | Effect |
+|---|---|---|
+| Brightness lift | **0.43 EV** | Exposure gain on the tone-mapped base; highlights pushed past white clip in the base and are handed back by the gain map |
+| Contrast | **1.14** | Power law about a linear mid-grey pivot, applied as a luminance-derived scale on RGB so saturation is untouched |
+
+Together these put mid grey at +0.21 EV relative to the source instead of
+−0.24 EV. Neither affects the HDR rendition — the gain map is measured against
+whatever base they produce, and the two cancel to within 0.008 EV (measured,
+and asserted by the test suite). Set the lift to 0 and the contrast to 1.0, or
+press *Neutral* in the dialog, for an unshaped base.
 
 ## Using the encoder directly
 
@@ -85,17 +108,18 @@ From a 45 MP (8192 × 5464) synthetic HDR frame with fine grain, on four cores:
 
 | | |
 |---|---|
-| Encode time | 3.7 s |
+| Encode time | 3.8 s |
 | Peak memory | 678 MB |
-| Base JPEG | 2.99 MB |
-| Gain map (mono, 1:2) | 0.74 MB — **+24.7%** |
-| Gain map (RGB, 1:1) | 2.46 MB — +82.4% |
-| HDR reconstruction error | 0.47% mean, 3.0% worst case in highlights |
+| Base JPEG | 3.20 MB |
+| Gain map (mono, 1:2) | 0.39 MB — **+12.2%** |
+| Gain map (RGB, 1:1) | 1.43 MB — +44.7% |
+| HDR reconstruction error | 0.43% mean, 2.4% worst case in highlights |
+| HDR shift from SDR shaping | 0.008 EV mean |
 
-The +24.7% figure sits inside the 15–25% band the spec asks for, and the RGB
-1:1 comparison shows what the default is buying. A real photograph's gain map
-is smoother than this deliberately grainy fixture, so the overhead in practice
-tends to be lower.
+The +12.2% figure comes in under the 15–25% band the spec asks for, and the
+RGB 1:1 comparison shows what the default is buying. A real photograph's gain
+map is smoother than this deliberately grainy fixture, so the overhead in
+practice tends to be lower still.
 
 ## Repository layout
 
