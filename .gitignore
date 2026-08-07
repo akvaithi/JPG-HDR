@@ -1,0 +1,8 @@
+build/
+encoder/build/
+*.o
+*.a
+dist/
+plugin/iso21496.lrdevplugin/bin/macOS/iso21496_encoder
+plugin/iso21496.lrdevplugin/bin/windows/iso21496_encoder.exe
+plugin/iso21496.lrdevplugin/bin/linux/iso21496_encoder

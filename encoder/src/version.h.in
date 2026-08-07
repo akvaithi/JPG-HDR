@@ -1,0 +1,2 @@
+#pragma once
+#define ISO21496_ENCODER_VERSION "@PROJECT_VERSION@"
