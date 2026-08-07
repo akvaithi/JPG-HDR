@@ -45,8 +45,10 @@ function exportFilterProvider.updateExportSettings(exportSettings)
 	exportSettings.LR_export_bitDepth = 16
 	exportSettings.LR_export_colorSpace = 'ProPhotoRGB'
 	exportSettings.LR_tiff_compressionMethod = 'compressionMethod_None'
-	if exportSettings.LR_export_isHDR ~= nil then exportSettings.LR_export_isHDR = true end
-	if exportSettings.LR_export_hdrOutput ~= nil then exportSettings.LR_export_hdrOutput = true end
+	-- HDR Output on, no baked SDR-compatible copy. Without these the render
+	-- carries no headroom for the gain map to describe.
+	exportSettings.LR_export_useHDR = true
+	exportSettings.LR_export_maximizeCompatibility = false
 end
 
 function exportFilterProvider.shouldRenderPhoto(exportSettings, photo)

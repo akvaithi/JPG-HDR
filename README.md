@@ -121,6 +121,13 @@ RGB 1:1 comparison shows what the default is buying. A real photograph's gain
 map is smoother than this deliberately grainy fixture, so the overhead in
 practice tends to be lower still.
 
+## Status
+
+Implemented in full, and verified everywhere that does not need Adobe software
+or an HDR panel. **Nothing has yet run inside Lightroom Classic, and no output
+has been opened on an HDR display** — see [docs/HANDOFF.md](docs/HANDOFF.md)
+for the first-export checklist, the known risks, and what to build next.
+
 ## Repository layout
 
 ```
@@ -131,7 +138,8 @@ plugin/
   iso21496.lrdevplugin/   the Lightroom bundle
   tests/          headless Lua harness that runs the plug-in against the binary
 scripts/          build and packaging
-docs/             installation, architecture, acceptance criteria, build spec
+docs/             handoff, architecture, acceptance criteria, install, build spec
+CLAUDE.md         invariants and gotchas for anyone changing the code
 ```
 
 ## Development
@@ -144,6 +152,20 @@ ctest --test-dir encoder/build --output-on-failure
 
 The suite is dependency-free, and picks up two extra tests when the tools are
 available: a decode round-trip through **libjpeg**, and the metadata compliance
-audit through **exiftool**. See
-[docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) for how each acceptance criterion in
-the build spec is verified, and which ones need real hardware.
+audit through **exiftool**. Install both — the decode test is the only one that
+would catch a wrong gain map:
+
+```bash
+apt-get install -y libjpeg-dev libimage-exiftool-perl lua5.4   # Linux
+brew install jpeg-turbo exiftool lua                           # macOS
+```
+
+`./scripts/build.sh` runs the C++ suite and then the Lua harness against the
+binary it just built; that is the one to run before believing anything works.
+
+* [CLAUDE.md](CLAUDE.md) — invariants that are easy to break, and the gotchas
+  that have already bitten.
+* [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) — how each criterion in the build
+  spec is verified, and which ones need real hardware.
+* [docs/HANDOFF.md](docs/HANDOFF.md) — next steps, known risks, and what was
+  deliberately left out.

@@ -54,10 +54,30 @@ function exportServiceProvider.updateExportSettings(exportSettings)
 	setIfPresent(exportSettings, 'LR_reimportExportedPhoto', false)
 	setIfPresent(exportSettings, 'LR_removeLocationMetadata', false)
 
-	-- Lightroom Classic 13 and later can render HDR values into the
-	-- intermediate; ask for that where the key exists.
-	setIfPresent(exportSettings, 'LR_export_isHDR', true)
-	setIfPresent(exportSettings, 'LR_export_hdrOutput', true)
+	-- HDR Output on, and no baked SDR-compatible copy. Without these the
+	-- intermediate is an ordinary SDR render and there is no headroom for the
+	-- gain map to describe. These two key names are the ones Lightroom Classic
+	-- 14 actually uses.
+	exportSettings.LR_export_useHDR = true
+	exportSettings.LR_export_maximizeCompatibility = false
+end
+
+-- Checks the settings that actually determine whether there is HDR data to
+-- work with. Returns a list of human-readable problems, empty when all is well.
+local function intermediateProblems(settings)
+	local issues = {}
+	if settings.LR_format ~= 'TIFF' then
+		issues[#issues + 1] = LOC('$$$/Iso21496/IssueFormat=Format is ^1; it must be TIFF, which is the intermediate the encoder reads.',
+			tostring(settings.LR_format))
+	end
+	if (tonumber(settings.LR_export_bitDepth) or 8) < 16 then
+		issues[#issues + 1] = LOC('$$$/Iso21496/IssueDepth=Bit depth is ^1; it must be 16 so the gain map can be derived without banding.',
+			tostring(settings.LR_export_bitDepth))
+	end
+	if settings.LR_export_useHDR == false then
+		issues[#issues + 1] = LOC '$$$/Iso21496/IssueHdr=HDR Output is off; without it the render has no highlights above SDR white and the gain map will be empty.'
+	end
+	return issues
 end
 
 function exportServiceProvider.processRenderedPhotos(functionContext, exportContext)
@@ -78,6 +98,19 @@ function exportServiceProvider.processRenderedPhotos(functionContext, exportCont
 		LrDialogs.message(
 			LOC '$$$/Iso21496/BadSettings=Check the export settings', problem, 'critical')
 		return
+	end
+
+	-- updateExportSettings forces all of this, but a future Lightroom could
+	-- rename a key. Warn rather than silently export a file with no HDR in it.
+	local issues = intermediateProblems(settings)
+	if #issues > 0 then
+		local choice = LrDialogs.confirm(
+			LOC '$$$/Iso21496/IssuesTitle=The export settings may limit HDR quality',
+			LOC('$$$/Iso21496/IssuesBody=The plug-in could not force these:\n\n^1',
+				table.concat(issues, '\n')),
+			LOC '$$$/Iso21496/Continue=Continue anyway',
+			LOC '$$$/Iso21496/Cancel=Cancel')
+		if choice == 'cancel' then return end
 	end
 
 	local arguments = IsoSettings.buildArguments(settings)
