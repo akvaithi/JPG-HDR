@@ -40,7 +40,12 @@ for i in 0..<CGImageSourceGetCount(src) {
         print("Apple HDR gain map: FOUND at index \(i) (the pre-ISO Apple format)")
     }
 }
-if !found { print("ISO gain map: NOT FOUND — this file will render SDR on Apple devices") }
+if !found {
+    // Not necessarily a fault: a natively encoded PQ or HLG file is HDR without
+    // a gain map. It simply has no SDR rendition to fall back on, which is the
+    // trade the gain map formats exist to avoid.
+    print("ISO gain map: none — HDR here would have to come from the encoding itself")
+}
 
 if let img = CGImageSourceCreateImageAtIndex(src, 0,
         [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR] as CFDictionary) {
@@ -48,4 +53,8 @@ if let img = CGImageSourceCreateImageAtIndex(src, 0,
     print(String(format: "decoded HDR: %dx%d, content headroom %.4f (%.4f EV)",
                  img.width, img.height, Double(headroom),
                  headroom > 0 ? log2(Double(headroom)) : 0))
+    if !found && headroom > 1.0 {
+        print("  -> HDR without a gain map: natively encoded, and SDR displays "
+              + "get whatever the viewer tone maps rather than a rendition you chose")
+    }
 }
