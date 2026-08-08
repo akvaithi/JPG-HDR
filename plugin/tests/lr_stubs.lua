@@ -82,14 +82,30 @@ modules.LrFileUtils = {
 	end,
 }
 
+-- Lightroom only lets you block inside a task; anywhere else — dialog
+-- construction, a binding, a button action — a yielding call raises. The stub
+-- raises the same way, so a module that shells out while building UI fails here
+-- instead of in the Plug-in Manager's error log.
+stubs.inTask = true
+
 modules.LrTasks = {
 	execute = function(command)
+		if not stubs.inTask then
+			error('We can only wait from within a task', 0)
+		end
 		local ok, kind, code = os.execute(command)
 		if ok == true then return 0 end
 		if type(ok) == 'number' then return ok end
 		return code or 1
 	end,
-	startAsyncTask = function(fn) fn() end,
+	canYield = function() return stubs.inTask == true end,
+	startAsyncTask = function(fn)
+		local wasInTask = stubs.inTask
+		stubs.inTask = true
+		local ok, err = pcall(fn)
+		stubs.inTask = wasInTask
+		if not ok then error(err, 0) end
+	end,
 	yield = function() end,
 }
 
@@ -114,6 +130,17 @@ modules.LrView = {
 	bind = function(spec) return spec end,
 	share = function(name) return name end,
 }
+
+--- A stand-in for the LrView factory the dialog builders are handed. Every
+--- control is a function of (self, args) that just returns its arguments, which
+--- is enough to run the builders and see what they do while assembling a view.
+function stubs.viewFactory()
+	return setmetatable({}, {
+		__index = function(_, _)
+			return function(_, args) return args or {} end
+		end,
+	})
+end
 
 modules.LrApplication = {
 	activeCatalog = function()

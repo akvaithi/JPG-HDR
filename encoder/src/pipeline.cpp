@@ -9,6 +9,9 @@
 #include "threads.h"
 
 namespace iso21496 {
+
+float clampf(float v, float lo, float hi) { return std::min(hi, std::max(lo, v)); }
+
 namespace {
 
 // Rec.2020 luminance weights; we do all tone mapping in the output space, so
@@ -72,7 +75,8 @@ struct SdrShaper {
   }
 };
 
-SdrShaper makeShaper(const PipelineOptions& o, float maxBoost) {
+SdrShaper makeShaper(const PipelineOptions& o, float maxBoost, float liftEV,
+                     float contrast) {
   SdrShaper s;
   s.op = o.toneMap;
   s.toneCeiling = std::max(1.0001f, std::pow(2.0f, maxBoost));
@@ -85,49 +89,130 @@ SdrShaper makeShaper(const PipelineOptions& o, float maxBoost) {
   // end result, since highlights pushed past 1.0 clip in the 8-bit base and
   // are handed back by the gain map, which is measured per pixel against the
   // base as actually written.
-  s.liftGain = std::pow(2.0f, std::max(0.0f, o.sdrLiftEV));
-  s.contrast = o.sdrContrast;
+  s.liftGain = std::pow(2.0f, std::max(0.0f, liftEV));
+  s.contrast = contrast;
   constexpr float kPivot = 0.18f;  // linear-light mid grey
-  s.pivotScale = std::pow(kPivot, 1.0f - o.sdrContrast);
+  s.pivotScale = std::pow(kPivot, 1.0f - contrast);
   return s;
 }
 
-// The most negative gain the shaped base can call for. Once the base is
-// lifted it is brighter than the HDR image through the midtones, so the gain
-// map has to be able to darken as well as brighten; a floor pinned at 0 would
-// clamp those pixels and reconstruct them too bright.
+// ---------------------------------------------------------------------------
+// Solving the SDR base shaping from the image
 //
-// Swept analytically rather than measured from the image: the mapping from HDR
-// luminance to shaped SDR luminance is one-dimensional, so a dense sweep finds
-// the true extreme with no extra pass over the pixels and no dependence on
-// whether a downscale happened to catch the right pixel.
-float computeGainFloor(const SdrShaper& shaper, const PipelineOptions& o,
-                       float maxBoost, bool multiChannel) {
-  const float ceiling = std::pow(2.0f, maxBoost);
-  float floorLog2 = 0.0f;
-  constexpr int kSteps = 4096;
-  for (int i = 0; i <= kSteps; ++i) {
-    // Log-spaced from deep shadow to the ceiling.
-    const float t = static_cast<float>(i) / kSteps;
-    const float l = std::pow(2.0f, -20.0f + t * (20.0f + maxBoost));
-    if (l > ceiling) break;
-    const float k = shaper.rgbScale(l);
-    const float sdr = std::min(1.0f, shaper.shapedLuminance(l));
-    floorLog2 = std::min(floorLog2,
-                         std::log2((l + o.offsetHdr) / (sdr + o.offsetSdr)));
-    if (multiChannel && k > 0.0f) {
-      // A single channel is most negative right where it reaches 1.0, since
-      // below that the shaped value grows faster than the HDR value.
-      const float h = std::min(ceiling, 1.0f / k);
-      const float s = std::min(1.0f, h * k);
-      floorLog2 = std::min(floorLog2,
-                           std::log2((h + o.offsetHdr) / (s + o.offsetSdr)));
+// The lift and contrast exist to undo what the tone curve did on its way to an
+// 8-bit base, and how much that is depends entirely on where this particular
+// photo's tones sit. A fixed pair of numbers is therefore wrong for almost
+// every picture: measured over the sweep in `solveShaping`, the lift a frame
+// actually wants ranges from nothing at all on a night shot — where the curve
+// is already the identity — to about a stop on a high-key one. That spread is
+// why these were the two controls hardest to set by hand.
+// ---------------------------------------------------------------------------
+
+// A log2-luminance histogram of the block-averaged image. Block averages rather
+// than raw pixels on purpose: it is the same softened downscale the headroom
+// measurement uses, so noise cannot drag the percentiles around, and it costs
+// one bin increment per block instead of one per pixel.
+constexpr int kHistBins = 384;
+constexpr float kHistLo = -14.0f;
+constexpr float kHistHi = 10.0f;
+constexpr float kHistScale = kHistBins / (kHistHi - kHistLo);
+
+int histBin(float luminance) {
+  const int bin = static_cast<int>(
+      std::lround((std::log2(luminance) - kHistLo) * kHistScale));
+  return std::min(kHistBins - 1, std::max(0, bin));
+}
+
+// Luminance below which the given fraction of the image lies.
+float histPercentile(const std::vector<uint64_t>& hist, uint64_t total,
+                     float fraction) {
+  if (total == 0) return 0.0f;
+  const uint64_t want = static_cast<uint64_t>(fraction * static_cast<double>(total));
+  uint64_t seen = 0;
+  for (int i = 0; i < kHistBins; ++i) {
+    seen += hist[i];
+    if (seen >= want)
+      return std::pow(2.0f, kHistLo + static_cast<float>(i) / kHistScale);
+  }
+  return std::pow(2.0f, kHistHi);
+}
+
+struct AutoShape {
+  float liftEV = 0.0f;
+  float contrast = 1.0f;
+  float anchor = 0.0f;
+};
+
+
+// How much of the midtone contrast the tone curve swallowed to hand back.
+//
+// Not 1.0, and this is the one number here that is a judgement rather than a
+// measurement. Restoring the spread in full makes the base an identity below
+// SDR white, which is the same thing as `--tone-map clip`: it removes the
+// shoulder and drives highlights harder into the clip the gain map then has to
+// undo. The value is pinned to the hand-tuned defaults this encoder shipped
+// with, which were arrived at by eye on real photographs: on a frame with the
+// median luminance those were chosen against, full restoration solves to 1.35
+// and the shipped default was 1.14, i.e. (1.14 - 1) / (1.35 - 1) = 0.4. The
+// lift carries no such factor — undoing a darkening has no shoulder to lose.
+constexpr float kContrastRestore = 0.4f;
+
+AutoShape solveShaping(const std::vector<uint64_t>& hist, uint64_t total,
+                       const PipelineOptions& o, float maxBoost) {
+  AutoShape s;
+  if (total == 0) return s;
+
+  // The bare tone curve, with no shaping on top: what the base would be if
+  // nothing corrected it.
+  const SdrShaper curve = makeShaper(o, maxBoost, 0.0f, 1.0f);
+
+  // Contrast first. The curve flattens midtone separation — a Reinhard's
+  // log-log slope is 1/(1+L), so it is compressing tones that are nowhere near
+  // needing it — and the exponent that undoes that is the ratio of the two
+  // interquartile spreads. In log space the exponent scales the spread
+  // linearly, so this is exact rather than fitted, and it is independent of the
+  // lift, which is a pure offset in the same space. That independence is why
+  // this has to be solved before the lift and not after.
+  const float lo = std::min(1.0f, histPercentile(hist, total, 0.25f));
+  const float hi = std::min(1.0f, histPercentile(hist, total, 0.75f));
+  if (lo > 0.0f && hi > lo) {
+    const float sLo = curve.shapedLuminance(lo);
+    const float sHi = curve.shapedLuminance(hi);
+    if (sLo > 0.0f && sHi > sLo) {
+      const float got = std::log2(sHi / sLo);
+      if (got > 1e-4f) {
+        const float ideal = std::log2(hi / lo) / got;
+        s.contrast = 1.0f + kContrastRestore * (ideal - 1.0f);
+      }
     }
   }
-  // Keep the floor in the territory real captures occupy rather than letting
-  // the sweep's extreme define it: an iPhone 17 writes about -0.49 EV, and
-  // Lightroom's own export -0.39 to -0.46 EV.
-  return std::max(-1.0f, floorLog2);
+  s.contrast = clampf(s.contrast, 1.0f, 1.5f);
+
+  // Lift, solved *through* that contrast so the two do not fight: the contrast
+  // pivots about mid grey, which moves the anchor unless it is solved for
+  // afterwards. Below SDR white the curve is darkening luminance that never
+  // needed compressing, so putting the median back where it started corrects
+  // exactly that error and nothing more — which is what makes it safe to apply
+  // to a photograph nobody has looked at.
+  //
+  //   shaped(a) = (T(a) * lift)^c * pivot^(1-c) = a
+  //     =>  lift = (a / pivot^(1-c))^(1/c) / T(a)
+  const float median = histPercentile(hist, total, 0.5f);
+  s.anchor = median;
+  const float anchor = std::min(1.0f, median);  // above white it is clipped anyway
+  const float toneMapped = anchor > 0.0f ? curve.shapedLuminance(anchor) : 0.0f;
+  if (toneMapped > 0.0f) {
+    constexpr float kPivot = 0.18f;
+    const float pivotScale = std::pow(kPivot, 1.0f - s.contrast);
+    s.liftEV = std::log2(std::pow(anchor / pivotScale, 1.0f / s.contrast) /
+                         toneMapped);
+  }
+
+  // The base is a fallback, not the picture: it is never worth letting the
+  // solve run away on an unusual histogram.
+  s.liftEV = clampf(s.liftEV, 0.0f, 1.5f);
+  s.contrast = clampf(s.contrast, 1.0f, 1.5f);
+  return s;
 }
 
 struct Resolved {
@@ -171,7 +256,8 @@ Resolved resolveInputSpace(const TiffReader& tiff, const PipelineOptions& o) {
 }  // namespace
 
 bool parseToneMap(const std::string& s, ToneMapOperator* out) {
-  if (s == "reinhard") *out = ToneMapOperator::Reinhard;
+  if (s == "local") *out = ToneMapOperator::Local;
+  else if (s == "reinhard") *out = ToneMapOperator::Reinhard;
   else if (s == "filmic") *out = ToneMapOperator::Filmic;
   else if (s == "clip" || s == "none") *out = ToneMapOperator::Clip;
   else return false;
@@ -189,11 +275,156 @@ const char* peakDetectName(PeakDetect p) {
   return p == PeakDetect::Exact ? "exact" : "softened";
 }
 
+// ---------------------------------------------------------------------------
+// Local tone mapping
+//
+// Everything above is a curve, and a curve cannot add depth. Whatever tonal
+// separation the compression takes out of the highlights is simply gone, which
+// is why a curve-based base image reads as a brighter or darker version of the
+// same flat picture rather than as the photograph.
+//
+// So: split log luminance into a smooth base and the detail that rides on it,
+// compress only the base, and add the detail back untouched. Highlights are
+// pulled into range while the separation inside them survives.
+//
+// The split is a self-guided filter (He, Sun, Tang) rather than a Gaussian
+// blur, because a blur straddles high-contrast edges and leaves a halo along
+// every one of them. It runs on a downscale of roughly a 1024-pixel long edge:
+// the base layer is low frequency by definition, so computing it at full
+// resolution would cost hundreds of megabytes on a 45 MP frame to produce the
+// same answer.
+// ---------------------------------------------------------------------------
+
+struct Plane {
+  uint32_t w = 0, h = 0;
+  std::vector<float> v;
+  Plane() = default;
+  Plane(uint32_t width, uint32_t height) : w(width), h(height),
+                                           v(static_cast<size_t>(width) * height, 0.0f) {}
+  float& at(uint32_t x, uint32_t y) { return v[static_cast<size_t>(y) * w + x]; }
+  float at(uint32_t x, uint32_t y) const { return v[static_cast<size_t>(y) * w + x]; }
+};
+
+// Separable box blur with a running sum: O(1) per pixel regardless of radius.
+Plane boxBlur(const Plane& src, int radius) {
+  Plane tmp(src.w, src.h), out(src.w, src.h);
+  const int r = std::max(1, radius);
+  for (uint32_t y = 0; y < src.h; ++y) {
+    double sum = 0.0;
+    int count = 0;
+    for (int x = -r; x <= r; ++x) {
+      sum += src.at(static_cast<uint32_t>(std::min<int>(src.w - 1, std::max(0, x))), y);
+      ++count;
+    }
+    for (uint32_t x = 0; x < src.w; ++x) {
+      tmp.at(x, y) = static_cast<float>(sum / count);
+      const int add = std::min<int>(src.w - 1, static_cast<int>(x) + r + 1);
+      const int drop = std::max(0, static_cast<int>(x) - r);
+      sum += src.at(static_cast<uint32_t>(add), y);
+      sum -= src.at(static_cast<uint32_t>(drop), y);
+    }
+  }
+  for (uint32_t x = 0; x < src.w; ++x) {
+    double sum = 0.0;
+    int count = 0;
+    for (int y = -r; y <= r; ++y) {
+      sum += tmp.at(x, static_cast<uint32_t>(std::min<int>(src.h - 1, std::max(0, y))));
+      ++count;
+    }
+    for (uint32_t y = 0; y < src.h; ++y) {
+      out.at(x, y) = static_cast<float>(sum / count);
+      const int add = std::min<int>(src.h - 1, static_cast<int>(y) + r + 1);
+      const int drop = std::max(0, static_cast<int>(y) - r);
+      sum += tmp.at(x, static_cast<uint32_t>(add));
+      sum -= tmp.at(x, static_cast<uint32_t>(drop));
+    }
+  }
+  return out;
+}
+
+// Self-guided filter: smooths within regions and holds still across edges.
+// `eps` is in the units of the input squared — log2 luminance here — so it is
+// literally "variance below this many stops counts as texture, not an edge".
+Plane guidedFilter(const Plane& in, int radius, float eps) {
+  Plane sq(in.w, in.h);
+  for (size_t i = 0; i < in.v.size(); ++i) sq.v[i] = in.v[i] * in.v[i];
+
+  const Plane mean = boxBlur(in, radius);
+  const Plane meanSq = boxBlur(sq, radius);
+
+  Plane a(in.w, in.h), b(in.w, in.h);
+  for (size_t i = 0; i < in.v.size(); ++i) {
+    const float var = std::max(0.0f, meanSq.v[i] - mean.v[i] * mean.v[i]);
+    a.v[i] = var / (var + eps);       // ~1 across an edge, ~0 inside a flat area
+    b.v[i] = mean.v[i] * (1.0f - a.v[i]);
+  }
+  const Plane meanA = boxBlur(a, radius);
+  const Plane meanB = boxBlur(b, radius);
+
+  Plane out(in.w, in.h);
+  for (size_t i = 0; i < in.v.size(); ++i)
+    out.v[i] = meanA.v[i] * in.v[i] + meanB.v[i];
+  return out;
+}
+
+// Where compression starts, in stops below SDR white. Below this the base is
+// left exactly alone, so the diffuse midtones of the picture come through at
+// the luminance the render gave them; above it the remaining SDR range absorbs
+// everything up to the peak.
+float kneeStartFor(float maxBoost) {
+  // Measured on Lightroom's own HDR export of a +2.30 EV edit: at -1.15 the
+  // shoulder barely engages, because a photograph's midtones already sit below
+  // SDR white and only the highlights need folding in. Taking it to about -2
+  // puts the upper midtones through the shoulder too, which is what leaves room
+  // for the detail layer to read as depth rather than as brightness.
+  return -clampf(0.85f * maxBoost, 1.0f, 2.5f);
+}
+
+// Compresses the base layer into the SDR range: identity up to the knee, then a
+// smooth shoulder that lands the peak exactly on white.
+float compressBase(float b, float kneeStart, float maxLog) {
+  if (b <= kneeStart) return b;
+  const float span = -kneeStart;           // stops of SDR range above the knee
+  const float range = maxLog - kneeStart;  // stops of HDR to fold into it
+  if (span <= 1e-4f || range <= 1e-4f) return std::min(b, 0.0f);
+  // Slope exactly 1 at the knee, decaying from there, so the shoulder joins the
+  // identity smoothly and never rises above it.
+  //
+  // Deliberately *not* normalised to land the peak exactly on white. Scaling
+  // this to reach white would push the slope above 1 just past the knee — the
+  // average slope over the shoulder is span/range < 1, so hitting the endpoint
+  // while starting at 1 requires exceeding 1 somewhere — and the base would
+  // then be brighter than the HDR image there. That would cost the exactly-zero
+  // gain floor this operator gets for free, to buy back the last 2.5% of
+  // range. The peak lands a few hundredths of a stop under white instead.
+  const float k = range / span;            // the compression ratio at the knee
+  const float t = clampf((b - kneeStart) / range, 0.0f, 1.0f);
+  return kneeStart + span * (1.0f - std::exp(-k * t));
+}
+
+float compressBaseForTest(float b, float kneeStart, float maxLog) {
+  return compressBase(b, kneeStart, maxLog);
+}
+
+SdrShaping solveSdrShaping(const float* luminances, size_t count,
+                           const PipelineOptions& opts, float maxBoost) {
+  std::vector<uint64_t> hist(kHistBins, 0);
+  uint64_t total = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if (!(luminances[i] > 0.0f)) continue;
+    ++hist[histBin(luminances[i])];
+    ++total;
+  }
+  const AutoShape s = solveShaping(hist, total, opts, maxBoost);
+  return {s.liftEV, s.contrast};
+}
+
 const char* toneMapName(ToneMapOperator t) {
   switch (t) {
     case ToneMapOperator::Filmic: return "filmic";
     case ToneMapOperator::Clip: return "clip";
-    default: return "reinhard";
+    case ToneMapOperator::Reinhard: return "reinhard";
+    default: return "local";
   }
 }
 
@@ -245,6 +476,12 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
   float maxBoost = opts.targetHeadroom;
   float measured = 0.0f;
   float truePeak = 0.0f;
+  std::vector<uint64_t> hist(kHistBins, 0);
+  uint64_t histTotal = 0;
+  uint32_t guideBlock = 1, guideW = 0, guideH = 0;
+  Plane guideLog;
+  float channelCeiling[3] = {0.0f, 0.0f, 0.0f};
+  float channelTruePeak[3] = {0.0f, 0.0f, 0.0f};
   {
     const uint32_t longEdge = std::max(w, h);
     // Roughly a 2048-pixel long edge, and always at least 2x2 on anything
@@ -255,6 +492,16 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
     if (opts.peakDetect == PeakDetect::Exact) blockSize = 1;
 
     const uint32_t blocksX = (w + blockSize - 1) / blockSize;
+
+    // A second, coarser downscale for the local operator's guide. Kept
+    // independent of the peak-detection blocks because --peak-detect exact
+    // drives those to 1x1, and a full-resolution guide would cost 180 MB on a
+    // 45 MP frame to compute a layer that is low frequency by construction.
+    guideBlock = std::max<uint32_t>(1, (longEdge + 1023u) / 1024u);
+    guideW = (w + guideBlock - 1) / guideBlock;
+    guideH = (h + guideBlock - 1) / guideBlock;
+    std::vector<double> guideSum(static_cast<size_t>(guideW) * guideH, 0.0);
+    std::vector<uint32_t> guideCount(static_cast<size_t>(guideW) * guideH, 0);
 
     // Output-space luminance as a function of the *input* primaries, so the
     // measurement pass never has to build a converted RGB triple.
@@ -280,6 +527,18 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
 
     std::vector<float> blockPeak(readBands, 0.0f);
     std::vector<float> pixelPeak(readBands, 0.0f);
+    // Per-channel peaks, in the output space, so each channel can be held at
+    // its own ceiling instead of at the luminance one.
+    std::vector<float> bandChanBlock(readBands * 3, 0.0f);
+    std::vector<float> bandChanPixel(readBands * 3, 0.0f);
+    // One histogram per band, merged afterwards: a shared one would need a
+    // lock on the hottest loop in the encoder.
+    std::vector<std::vector<uint32_t>> bandHist(readBands);
+    // Guide accumulators are per band and merged afterwards for the same
+    // reason: a band boundary can land inside a guide row.
+    std::vector<std::vector<double>> bandGuideSum(readBands);
+    std::vector<std::vector<uint32_t>> bandGuideCount(readBands);
+    std::vector<uint32_t> bandGuideRow0(readBands, 0);
 
     parallelFor(readBands, opts.threads, [&](size_t bi) {
       const uint32_t y0 = static_cast<uint32_t>(bi) * readRows;
@@ -291,6 +550,13 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
       std::vector<double> sums(static_cast<size_t>(blockRowsHere) * blocksX, 0.0);
       std::vector<uint32_t> counts(static_cast<size_t>(blockRowsHere) * blocksX, 0);
       float localPixelPeak = 0.0f;
+      std::vector<double> chanSums(static_cast<size_t>(blockRowsHere) * blocksX * 3, 0.0);
+      float localChanPixel[3] = {0.0f, 0.0f, 0.0f};
+
+      const uint32_t gRow0 = y0 / guideBlock;
+      const uint32_t gRowsHere = (y0 + rows - 1) / guideBlock - gRow0 + 1;
+      std::vector<double> gSum(static_cast<size_t>(gRowsHere) * guideW, 0.0);
+      std::vector<uint32_t> gCount(static_cast<size_t>(gRowsHere) * guideW, 0);
 
       for (uint32_t r = 0; r < rows; ++r) {
         const float* srow = src.data() + static_cast<size_t>(r) * w * inChannels;
@@ -310,33 +576,114 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
               l += static_cast<float>(inputLumWeights[c]) *
                    decodeTransfer(in.transfer, p[c], opts.pqDiffuseWhiteNits);
           }
+          // Per-channel values in the output space, for the channel ceilings.
+          {
+            float lin[3];
+            for (int c = 0; c < 3; ++c) {
+              const float raw = inChannels == 1
+                                    ? srow[x]
+                                    : srow[static_cast<size_t>(x) * inChannels + c];
+              lin[c] = decodeTransfer(in.transfer, raw, opts.pqDiffuseWhiteNits);
+            }
+            float outRgb[3];
+            if (identityMatrix) {
+              outRgb[0] = lin[0]; outRgb[1] = lin[1]; outRgb[2] = lin[2];
+            } else {
+              auto v = toOutput.apply({lin[0], lin[1], lin[2]});
+              outRgb[0] = static_cast<float>(v[0]);
+              outRgb[1] = static_cast<float>(v[1]);
+              outRgb[2] = static_cast<float>(v[2]);
+            }
+            double* cs = chanSums.data() +
+                         (static_cast<size_t>(r / blockSize) * blocksX +
+                          x / blockSize) * 3;
+            for (int c = 0; c < 3; ++c) {
+              const float v = std::max(0.0f, outRgb[c]);
+              cs[c] += v;
+              localChanPixel[c] = std::max(localChanPixel[c], v);
+            }
+          }
           if (l < 0.0f) l = 0.0f;
           sumRow[x / blockSize] += l;
           ++cntRow[x / blockSize];
           localPixelPeak = std::max(localPixelPeak, l);
+          const size_t gi =
+              static_cast<size_t>((y0 + r) / guideBlock - gRow0) * guideW +
+              x / guideBlock;
+          gSum[gi] += l;
+          ++gCount[gi];
         }
       }
 
       float bandPeak = 0.0f;
+      std::vector<uint32_t> localHist(kHistBins, 0);
       for (size_t b = 0; b < sums.size(); ++b) {
         if (counts[b] == 0) continue;
-        bandPeak = std::max(bandPeak, static_cast<float>(sums[b] / counts[b]));
+        const float avg = static_cast<float>(sums[b] / counts[b]);
+        bandPeak = std::max(bandPeak, avg);
+        if (avg > 0.0f) ++localHist[histBin(avg)];
       }
+      for (size_t b = 0; b < counts.size(); ++b) {
+        if (counts[b] == 0) continue;
+        for (int c = 0; c < 3; ++c) {
+          const float avg = static_cast<float>(chanSums[b * 3 + c] / counts[b]);
+          bandChanBlock[bi * 3 + c] = std::max(bandChanBlock[bi * 3 + c], avg);
+        }
+      }
+      for (int c = 0; c < 3; ++c) bandChanPixel[bi * 3 + c] = localChanPixel[c];
+
       blockPeak[bi] = bandPeak;
       pixelPeak[bi] = localPixelPeak;
+      bandHist[bi] = std::move(localHist);
+      bandGuideRow0[bi] = gRow0;
+      bandGuideSum[bi] = std::move(gSum);
+      bandGuideCount[bi] = std::move(gCount);
     });
+
+    for (uint32_t bi = 0; bi < readBands; ++bi) {
+      const size_t n = bandGuideSum[bi].size();
+      const size_t offset = static_cast<size_t>(bandGuideRow0[bi]) * guideW;
+      for (size_t i = 0; i < n; ++i) {
+        guideSum[offset + i] += bandGuideSum[bi][i];
+        guideCount[offset + i] += bandGuideCount[bi][i];
+      }
+    }
+
+    // The guide lives in log2 luminance, which is the space the split, the
+    // knee and the detail layer all work in.
+    guideLog = Plane(guideW, guideH);
+    for (size_t i = 0; i < guideLog.v.size(); ++i) {
+      const float avg = guideCount[i]
+                            ? static_cast<float>(guideSum[i] / guideCount[i])
+                            : 0.0f;
+      guideLog.v[i] = std::max(-20.0f, std::log2(std::max(avg, 1e-7f)));
+    }
 
     float peak = 0.0f;
     for (uint32_t bi = 0; bi < readBands; ++bi) {
       peak = std::max(peak, blockPeak[bi]);
       truePeak = std::max(truePeak, pixelPeak[bi]);
+      for (int c = 0; c < 3; ++c) {
+        channelCeiling[c] = std::max(channelCeiling[c], bandChanBlock[bi * 3 + c]);
+        channelTruePeak[c] = std::max(channelTruePeak[c], bandChanPixel[bi * 3 + c]);
+      }
+      if (bandHist[bi].empty()) continue;
+      for (int i = 0; i < kHistBins; ++i) {
+        hist[i] += bandHist[bi][i];
+        histTotal += bandHist[bi][i];
+      }
     }
     measured = peak > 1.0f ? std::log2(peak) : 0.0f;
     res.measuredHeadroom = measured;
     res.truePeakHeadroom = truePeak > 1.0f ? std::log2(truePeak) : 0.0f;
     if (opts.autoMaxBoost) {
-      // Leave a sixth of a stop of slack for interpolation and rounding.
-      maxBoost = std::min(opts.targetHeadroom, measured + 1.0f / 6.0f);
+      // Exactly what was measured, with no slack. A sixth of a stop used to be
+      // added here "for interpolation and rounding", but nothing interpolates
+      // above the stored maximum, and the cost is real: declaring 2.47 where
+      // the photo needs 2.30 makes a display with 2.30 stops apply only
+      // 2.30/2.47 of the gain. Lightroom declares its measurement exactly, and
+      // on the reference frame this now agrees with it to four decimals.
+      maxBoost = std::min(opts.targetHeadroom, measured);
       maxBoost = std::max(maxBoost, 0.0f);
     }
   }
@@ -344,23 +691,80 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
 
   // The HDR clamp and the gain map share one ceiling, so every highlight the
   // base image gives up is one the gain map can hand back.
-  const float lmax = std::pow(2.0f, maxBoost);
-  const SdrShaper shaper = makeShaper(opts, maxBoost);
-  const float minBoost =
-      computeGainFloor(shaper, opts, maxBoost, opts.multiChannelGainMap);
 
-  res.declaredHeadroom = maxBoost;
-  for (int c = 0; c < 3; ++c) {
-    res.minBoostLog2[c] = minBoost;
-    res.maxBoostLog2[c] = maxBoost;
+  // The shaping has to be settled before the shaper is built, because the gain
+  // map is measured against the base the shaper produces.
+  const bool localToneMap = opts.toneMap == ToneMapOperator::Local;
+
+  // The base layer, and the knee that will compress it. A radius of about a
+  // sixteenth of the guide's long edge is wide enough to separate the
+  // illumination from the texture riding on it without reaching across the
+  // frame; eps is 0.25, i.e. a quarter of a stop of local variance is texture
+  // to be preserved and anything larger is an edge to hold still across.
+  Plane baseLog;
+  const float kneeStart =
+      opts.sdrKnee < 0.0f ? opts.sdrKnee : kneeStartFor(maxBoost);
+  const float detailStrength = opts.sdrDetail;
+  if (localToneMap && guideLog.w > 0) {
+    const int radius = std::max<int>(
+        2, static_cast<int>(std::max(guideLog.w, guideLog.h) / 16));
+    baseLog = guidedFilter(guideLog, radius, std::max(1e-3f, opts.sdrEdge));
+    logf("local tone map: guide %ux%u (1:%u), radius %d, knee %.2f EV, detail %.2f",
+         guideLog.w, guideLog.h, guideBlock, radius, kneeStart, detailStrength);
   }
 
-  res.gain.assign(static_cast<size_t>(res.gainWidth) * res.gainHeight *
-                      gainChannels,
-                  0);
+  // A curve needs the lift and contrast to undo its own midtone darkening. The
+  // local operator has nothing to undo — below the knee it is the identity — so
+  // shaping it would only push the base away from the render.
+  float liftEV = localToneMap ? 0.0f : opts.sdrLiftEV;
+  float contrast = localToneMap ? 1.0f : opts.sdrContrast;
+  if (!localToneMap && opts.sdrShape == SdrShapeMode::Auto) {
+    const AutoShape solved = solveShaping(hist, histTotal, opts, maxBoost);
+    liftEV = solved.liftEV;
+    contrast = solved.contrast;
+    res.midtoneAnchor = solved.anchor;
+    logf("auto shaping: median luminance %.4f -> lift %.3f EV, contrast %.3f",
+         solved.anchor, liftEV, contrast);
+  }
+  res.sdrLiftEV = liftEV;
+  res.sdrContrast = contrast;
 
-  const float invGamma = 1.0f / opts.gainMapGamma;
-  const float boostRange = maxBoost - minBoost;
+  const SdrShaper shaper = makeShaper(opts, maxBoost, liftEV, contrast);
+  // The local operator never brightens: the compressed base is
+  // compressBase(B) <= B and the detail layer cancels exactly, so the base
+  // image is everywhere at or below the HDR image and the gain map only ever
+  // has to brighten. No sweep needed, and none would be valid — the sweep
+  // assumes one output per input luminance, which is the property the local
+  // operator exists to break.
+  //
+  // Both ends of the gain range are measured rather than bounded, because
+  // neither can be bounded honestly. The local operator has no closed form to
+  // sweep, and with the detail layer above unit strength the base can come out
+  // brighter than the HDR image wherever the detail is positive, so the floor
+  // is not reliably zero either. Anything a bound missed would be clamped at
+  // quantisation and reconstruct wrong.
+
+  res.declaredHeadroom = maxBoost;
+
+  // The gains are held as floats for one pass so their true extremes can be
+  // read off, then quantised against those. The buffer is released immediately
+  // afterwards; it is four times the finished gain map and nothing else needs
+  // it.
+  std::vector<float> gainF(static_cast<size_t>(res.gainWidth) * res.gainHeight *
+                               gainChannels,
+                           0.0f);
+  std::vector<float> bandGainLo(static_cast<size_t>(bandCount) * 3, 1e30f);
+  std::vector<float> bandGainHi(static_cast<size_t>(bandCount) * 3, -1e30f);
+
+  // Decoders recover the normalised gain as pow(stored, 1/gamma) — Ultra HDR
+  // and ISO 21496-1 agree on this — so the encoder stores pow(norm, gamma).
+  // This was inverted, and because the decode test encoded and decoded through
+  // the same inverted convention it round-tripped perfectly while every real
+  // decoder read the file 1.26 EV hot in the midtones. Measured against
+  // Lightroom's own export of the same edit: +1.30 EV at the median, with 55%
+  // of the frame pushed above SDR white where Lightroom put 11%. Any test for
+  // this has to decode the way the standard says, not the way we wrote it.
+  const float encodeGamma = opts.gainMapGamma;
 
   parallelFor(bandCount, opts.threads, [&](size_t bi) {
     const uint32_t y0 = static_cast<uint32_t>(bi) * band;
@@ -396,17 +800,55 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
           hdr[1] = static_cast<float>(v[1]);
           hdr[2] = static_cast<float>(v[2]);
         }
-        // Out-of-gamut negatives are clipped; values above the target
-        // headroom are held at the ceiling the metadata promises.
+        // Out-of-gamut negatives are clipped. Each channel is then held at
+        // *its own* measured ceiling rather than at the luminance ceiling: a
+        // saturated highlight puts far more into one channel than into the
+        // luminance it contributes to, and clamping every channel at the
+        // luminance peak truncates the strong one while leaving the weak ones
+        // alone. That is a hue shift, not a clip — measured on a Lightroom
+        // render whose luminance peaked at 2.30 EV, red reached 2.59 EV and
+        // 32,523 pixels were being desaturated toward neutral by it.
         for (int c = 0; c < 3; ++c)
-          hdr[c] = std::min(lmax, std::max(0.0f, hdr[c]));
+          hdr[c] = std::min(channelCeiling[c], std::max(0.0f, hdr[c]));
 
         const float lHdr = std::max(0.0f, static_cast<float>(
                                               lw[0] * hdr[0] + lw[1] * hdr[1] +
                                               lw[2] * hdr[2]));
         // Tone curve, lift and contrast collapse into one scale on RGB, so
-        // the base image's chromaticity matches the HDR image's exactly.
-        const float scale = shaper.rgbScale(lHdr);
+        // the base image's chromaticity matches the HDR image's exactly. The
+        // local operator produces a scale the same way — one number for all
+        // three channels — so it inherits that property unchanged.
+        float scale;
+        if (localToneMap && baseLog.w > 0) {
+          // Bilinear sample of the base layer at this pixel. Guide sample gx
+          // covers source columns [gx*block, (gx+1)*block), so its centre sits
+          // at (gx+0.5)*block.
+          const float fx =
+              (static_cast<float>(x) + 0.5f) / guideBlock - 0.5f;
+          const float fy =
+              (static_cast<float>(y0 + r) + 0.5f) / guideBlock - 0.5f;
+          const int x0 = static_cast<int>(std::floor(fx));
+          const int y0i = static_cast<int>(std::floor(fy));
+          const float tx = fx - x0, ty = fy - y0i;
+          const uint32_t xa = std::min<uint32_t>(baseLog.w - 1, std::max(0, x0));
+          const uint32_t xb = std::min<uint32_t>(baseLog.w - 1, std::max(0, x0 + 1));
+          const uint32_t ya = std::min<uint32_t>(baseLog.h - 1, std::max(0, y0i));
+          const uint32_t yb = std::min<uint32_t>(baseLog.h - 1, std::max(0, y0i + 1));
+          const float top = baseLog.at(xa, ya) * (1.0f - tx) + baseLog.at(xb, ya) * tx;
+          const float bot = baseLog.at(xa, yb) * (1.0f - tx) + baseLog.at(xb, yb) * tx;
+          const float b = top * (1.0f - ty) + bot * ty;
+
+          const float logL = std::max(-20.0f, std::log2(std::max(lHdr, 1e-7f)));
+          const float detail = logL - b;
+          const float logS =
+              compressBase(b, kneeStart, maxBoost) + detailStrength * detail;
+          // Back to a ratio. Expressed as scale rather than an absolute value
+          // so the chromaticity argument above still holds.
+          scale = lHdr > 1e-8f ? std::exp2(logS) / lHdr : 0.0f;
+          scale = std::min(scale, 1.0f);  // the operator must never brighten
+        } else {
+          scale = shaper.rgbScale(lHdr);
+        }
 
         float sdr[3];
         for (int c = 0; c < 3; ++c)
@@ -440,24 +882,70 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
       }
     }
 
-    // Box-average, normalise into [0,1], then apply the encoding gamma.
+    // Box-average into the float buffer, and note the extremes this band saw.
+    float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
     for (uint32_t gr = 0; gr < gRows; ++gr) {
       for (uint32_t gx = 0; gx < res.gainWidth; ++gx) {
         const size_t idx = static_cast<size_t>(gr) * res.gainWidth + gx;
         const float n = counts[idx] ? static_cast<float>(counts[idx]) : 1.0f;
-        uint8_t* dst = res.gain.data() +
-                       (static_cast<size_t>(gy0 + gr) * res.gainWidth + gx) *
-                           gainChannels;
+        float* dst = gainF.data() +
+                     (static_cast<size_t>(gy0 + gr) * res.gainWidth + gx) *
+                         gainChannels;
         for (int c = 0; c < gainChannels; ++c) {
-          float g = accum[idx * gainChannels + c] / n;
-          float norm = boostRange > 0.0f ? (g - minBoost) / boostRange : 0.0f;
-          norm = std::min(1.0f, std::max(0.0f, norm));
-          dst[c] = static_cast<uint8_t>(
-              std::lround(std::pow(norm, invGamma) * 255.0f));
+          const float g = accum[idx * gainChannels + c] / n;
+          dst[c] = g;
+          lo[c] = std::min(lo[c], g);
+          hi[c] = std::max(hi[c], g);
         }
       }
     }
+    for (int c = 0; c < gainChannels; ++c) {
+      bandGainLo[bi * 3 + c] = lo[c];
+      bandGainHi[bi * 3 + c] = hi[c];
+    }
   });
+
+  // The range every channel actually needs, end to end.
+  float gainLo[3] = {0.0f, 0.0f, 0.0f}, gainHi[3] = {0.0f, 0.0f, 0.0f};
+  for (int c = 0; c < gainChannels; ++c) {
+    float lo = 1e30f, hi = -1e30f;
+    for (uint32_t bi = 0; bi < bandCount; ++bi) {
+      lo = std::min(lo, bandGainLo[bi * 3 + c]);
+      hi = std::max(hi, bandGainHi[bi * 3 + c]);
+    }
+    if (!(lo <= hi)) { lo = 0.0f; hi = 0.0f; }
+    // A floor above zero would waste the bottom of the range, and a ceiling
+    // below it would be meaningless.
+    gainLo[c] = std::min(0.0f, lo);
+    gainHi[c] = std::max(gainLo[c] + 1e-4f, hi);
+  }
+  // A monochrome map has one channel but three metadata slots to fill.
+  for (int c = gainChannels; c < 3; ++c) {
+    gainLo[c] = gainLo[0];
+    gainHi[c] = gainHi[0];
+  }
+  for (int c = 0; c < 3; ++c) {
+    res.minBoostLog2[c] = gainLo[c];
+    res.maxBoostLog2[c] = gainHi[c];
+  }
+  logf("gain range: R %.3f..%.3f  G %.3f..%.3f  B %.3f..%.3f (declared headroom %.3f)",
+       gainLo[0], gainHi[0], gainLo[1], gainHi[1], gainLo[2], gainHi[2], maxBoost);
+
+  res.gain.assign(gainF.size(), 0);
+  parallelFor(res.gainHeight, opts.threads, [&](size_t gy) {
+    for (uint32_t gx = 0; gx < res.gainWidth; ++gx) {
+      const size_t i = (gy * res.gainWidth + gx) * gainChannels;
+      for (int c = 0; c < gainChannels; ++c) {
+        const float range = gainHi[c] - gainLo[c];
+        float norm = (gainF[i + c] - gainLo[c]) / range;
+        norm = std::min(1.0f, std::max(0.0f, norm));
+        res.gain[i + c] = static_cast<uint8_t>(
+            std::lround(std::pow(norm, encodeGamma) * 255.0f));
+      }
+    }
+  });
+  gainF.clear();
+  gainF.shrink_to_fit();
 
   return res;
 }

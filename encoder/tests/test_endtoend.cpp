@@ -121,6 +121,13 @@ void fullExport() {
   o.quality = 90;
   o.inputTransfer = TransferFunction::Linear;
   o.inputPrimaries = ColorPrimaries::ProPhoto;
+  // This case pins the monochrome layout, so it has to ask for it: RGB is the
+  // default. multiChannelAndSubsampling covers the three-channel form. It also
+  // pins the curve path, because the assertions below are about the lift the
+  // curve needs — the local operator has no lift and no negative floor.
+  o.multiChannelGainMap = false;
+  o.toneMap = ToneMapOperator::Reinhard;
+  o.sdrShape = SdrShapeMode::Manual;
 
   EncodeReport report;
   Bytes file = encodeToMemory(o, &report);
@@ -129,7 +136,7 @@ void fullExport() {
   CHECK_EQ(report.height, 140u);
   CHECK_EQ(report.gainWidth, 100u);
   CHECK_EQ(report.gainHeight, 70u);
-  CHECK_EQ(report.gainChannels, 1);
+  CHECK_EQ(report.gainChannels, 1);  // this case asks for mono explicitly
   CHECK_EQ(report.totalBytes, file.size());
   CHECK_EQ(report.primaryBytes + report.gainMapBytes, file.size());
 
@@ -154,7 +161,12 @@ void fullExport() {
 
   // Metadata values must reflect the requested settings.
   CHECK_NEAR(p.iso.baseHeadroom, 0.0, 1e-6);
-  CHECK_NEAR(p.iso.gamma[0], 2.2, 1e-3);
+  // The gamma written must be the one the encoder actually applied, not its
+  // reciprocal: decoders recover the gain as pow(stored, 1/gamma), so writing
+  // the inverse silently rewrites every midtone. Asserted as the round trip
+  // rather than as a number, because the number is the part that was wrong.
+  CHECK_NEAR(p.iso.gamma[0], o.gainMapGamma, 1e-4);
+  CHECK(p.iso.gamma[0] > 0.0f);
   CHECK_NEAR(p.iso.baseOffset[0], 0.015625, 1e-4);
   CHECK(p.iso.maxBoost[0] > 2.0f && p.iso.maxBoost[0] <= 4.0f);
   CHECK_NEAR(report.measuredHeadroom, std::log2(6.0), 0.15);
@@ -163,15 +175,59 @@ void fullExport() {
   // 4.0 EV ceiling that was asked for. Declaring the ceiling would make a
   // decoder scale the gain by display_headroom / 4.0 and render the photo
   // dim on any display with less than 4 stops of headroom.
-  CHECK_NEAR(p.iso.alternateHeadroom, p.iso.maxBoost[0], 1e-3);
+  CHECK_NEAR(p.iso.alternateHeadroom, report.measuredHeadroom, 1e-3);
   CHECK(p.iso.alternateHeadroom < 3.5f);
-  CHECK_NEAR(report.declaredHeadroom, report.maxBoostLog2, 1e-4);
+
+  // The gain map's own maximum is a separate quantity, and is deliberately no
+  // longer tied to it: the headroom says how much brighter than SDR white the
+  // picture goes, while the gain range says what each channel needs to get
+  // back there from the base. A saturated highlight needs more of the latter
+  // than the former, and Lightroom's own exports write maxima up to 0.39 EV
+  // above their declared headroom for exactly this reason. Tying the two
+  // together is what was truncating saturated highlights toward neutral.
+  CHECK(p.iso.maxBoost[0] > 0.0f);
+  CHECK_NEAR(p.iso.maxBoost[0], report.maxBoostLog2, 1e-3);
 
   // Lifting the base means it is brighter than the HDR image through the
   // midtones, so the gain map has to be able to darken as well as brighten.
   CHECK(report.minBoostLog2 < 0.0f);
   CHECK(report.minBoostLog2 >= -1.0f);
   CHECK_NEAR(p.iso.minBoost[0], report.minBoostLog2, 1e-3);
+}
+
+// The hdrgm attributes must carry one value per channel when the map is
+// multichannel. Writing only the first would tell every XMP-reading decoder to
+// apply the red range to green and blue as well.
+void gainMapXmpCarriesEveryChannel() {
+  TiffSpec spec;
+  spec.width = 64;
+  spec.height = 48;
+  std::string in = writeTempTiff(spec, makeHdrPattern(spec.width, spec.height, 4.0f),
+                                 "e2e_xmp.tif");
+  EncoderOptions o;
+  o.inputPath = in;
+  o.outputPath = std::string(ISO21496_TEST_TMPDIR) + "/e2e_xmp.jpg";
+  EncodeReport report;
+  Bytes file = encodeToMemory(o, &report);
+  CHECK_EQ(report.gainChannels, 3);
+
+  const std::string text(reinterpret_cast<const char*>(file.data()), file.size());
+  const size_t at = text.find("hdrgm:GainMapMax=\"");
+  CHECK(at != std::string::npos);
+  const size_t end = text.find('"', at + 18);
+  const std::string value = text.substr(at + 18, end - at - 18);
+  // Three values, comma separated, as Lightroom writes them.
+  CHECK_EQ(std::count(value.begin(), value.end(), ','), 2);
+
+  // A monochrome map keeps a single value: the attribute is per channel, and
+  // there is only one.
+  o.multiChannelGainMap = false;
+  Bytes monoFile = encodeToMemory(o, &report);
+  const std::string monoText(reinterpret_cast<const char*>(monoFile.data()),
+                             monoFile.size());
+  const size_t mAt = monoText.find("hdrgm:GainMapMax=\"");
+  const size_t mEnd = monoText.find('"', mAt + 18);
+  CHECK_EQ(std::count(monoText.begin() + mAt, monoText.begin() + mEnd, ','), 0);
 }
 
 void multiChannelAndSubsampling() {
@@ -195,10 +251,12 @@ void multiChannelAndSubsampling() {
     CHECK_EQ(p.gainComponents, 3);
     CHECK_EQ(p.gainWidth, static_cast<uint32_t>((64 + sub - 1) / sub));
     CHECK_EQ(p.gainHeight, static_cast<uint32_t>((48 + sub - 1) / sub));
-    CHECK_NEAR(p.iso.maxBoost[0], 4.0, 1e-3);  // auto max boost disabled
-    // With the measurement disabled, the declared headroom is the ceiling
-    // because that is genuinely what the gain map now spans.
+    // With the measurement disabled the declared headroom is the ceiling that
+    // was asked for. The gain range is still measured — it describes what the
+    // base needs, which is a different question from what the file declares.
     CHECK_NEAR(p.iso.alternateHeadroom, 4.0, 1e-3);
+    CHECK(p.iso.maxBoost[0] > 0.0f);
+    CHECK(p.iso.maxBoost[0] <= 4.0f + 1e-3f);
   }
 }
 
@@ -250,11 +308,12 @@ void gainMapOverheadIsSmall() {
   EncoderOptions o;
   o.inputPath = in;
   o.outputPath = std::string(ISO21496_TEST_TMPDIR) + "/e2e_size.jpg";
+  o.multiChannelGainMap = false;  // RGB is the default; ask for mono explicitly
+  o.gainMapSubsample = 1;
   EncodeReport mono;
   encodeToMemory(o, &mono);
 
   o.multiChannelGainMap = true;
-  o.gainMapSubsample = 1;
   EncodeReport rgbFull;
   encodeToMemory(o, &rgbFull);
 
@@ -262,7 +321,11 @@ void gainMapOverheadIsSmall() {
       static_cast<double>(mono.gainMapBytes) / mono.primaryBytes;
   const double rgbOverhead =
       static_cast<double>(rgbFull.gainMapBytes) / rgbFull.primaryBytes;
-  CHECK(monoOverhead < 0.25);
+  // A monochrome map is smaller than a three-channel one at the same scale.
+  // It is not offered in the plug-in — it cannot follow a highlight that
+  // changes hue, and measured against Lightroom it left highlights 0.63 EV
+  // duller — but the CLI keeps it, so it keeps its test.
+  CHECK(monoOverhead < 0.6);
   CHECK(monoOverhead < rgbOverhead);
 }
 
@@ -287,6 +350,7 @@ void reportsBadInputClearly() {
 
 void run() {
   fullExport();
+  gainMapXmpCarriesEveryChannel();
   multiChannelAndSubsampling();
   smallHighlightsAreNotMissed();
   gainMapOverheadIsSmall();

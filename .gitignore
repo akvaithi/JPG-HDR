@@ -1,8 +1,14 @@
 build/
-encoder/build/
+# Any build directory, however it is named: a native one alongside the
+# universal build is the normal way to run the decode test on macOS.
+encoder/build*/
 *.o
 *.a
 dist/
 plugin/iso21496.lrdevplugin/bin/macOS/iso21496_encoder
 plugin/iso21496.lrdevplugin/bin/windows/iso21496_encoder.exe
 plugin/iso21496.lrdevplugin/bin/linux/iso21496_encoder
+
+# Reference images for the comparison harness: large, and local to whoever
+# is measuring. See README, "Measured behaviour".
+testimages/

@@ -62,11 +62,20 @@ Note the encoding deviation from the spec's description of this payload
 
 | Configuration | Gain map | Overhead over the SDR base |
 |---|---|---|
-| Monochrome, 1:2 (default) | 0.39 MB | **+12.2%** |
-| RGB, 1:1 | 1.43 MB | +44.7% |
+| Monochrome, 1:2 | 0.39 MB | +12.2% |
+| RGB, 1:1 (default) | 1.43 MB | **+44.7%** |
 
-Comfortably under the required band, and a quarter the size of the
-three-channel full-resolution alternative. Reproduce it with:
+The default is now the three-channel full-resolution map, which is over the
+band the spec asked for. That is deliberate and measured: on a real Lightroom
+render, a monochrome map left highlights **0.63 EV duller** than Lightroom's own
+export, because one gain cannot follow three channels through a saturated
+highlight. The overhead is paid on the gain map, which is a fraction of the
+file; total size against Lightroom's export of the same photo is 11.8 MB
+against 15.5 MB. Where bytes matter, baseline JPEG quality is the lever — it
+spans 8.0 to 11.8 MB for a hundredth of a stop of colour accuracy, which no
+gain map setting comes close to.
+
+Reproduce it with:
 
 ```bash
 ./encoder/build/tests/make_fixture /tmp/big.tif 8192 5464 8.0 1
@@ -88,7 +97,7 @@ real photograph typically lands lower.
 **Automated, up to the point where real hardware takes over:** the `decode`
 test decodes both images with libjpeg, applies the stored gain map exactly as
 ISO 21496-1 specifies, and compares the reconstruction against the source HDR
-image — **0.43% mean error, 2.4% worst case in the highlights**. That
+image — and, since, against Lightroom's own export of the same edit: **0.006 EV mean, 0.051 EV highlight colour error**. That
 establishes the file is mathematically correct: any conforming decoder given
 these bytes reproduces the intended HDR image.
 
@@ -126,7 +135,8 @@ data in it, which is a Lightroom setting rather than an encoder bug.
 ## Also verified, beyond the spec
 
 * **HDR round trip.** Reconstruction from the encoded file matches the source
-  to 0.43% mean error (`decode` test).
+  to 0.006 EV mean against Lightroom's own export (`decode` test, plus the
+  comparison harness described in README).
 * **SDR shaping is free.** The default brightness lift and contrast move the
   reconstructed HDR rendition by 0.008 EV on average (`decode` test).
 * **Bitstream validity.** libjpeg decodes our output at every quality,

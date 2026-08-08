@@ -82,79 +82,67 @@ JPEGs. Use the export destination instead if that matters, and let its own
 
 ## Settings
 
-### Target HDR headroom
+### HDR headroom
 
-How far above SDR white the gain map is allowed to push, in stops:
+How far above SDR white the gain map may push. **Match the render** is the
+default and the right answer almost always: the encoder measures how much
+headroom the photo actually uses, stores that as the gain map's maximum boost,
+and declares it as the file's required headroom. That figure is the one
+Lightroom shows for the photo, because both are reading the same render.
 
-| Setting | Peak (at a 100-nit SDR reference) |
+The alternative is a cap, in stops:
+
+| Cap | Peak (at a 100-nit SDR reference) |
 |---|---|
 | +1.0 EV | ~160 nits |
 | +2.0 EV | ~320 nits |
 | +3.0 EV | ~640 nits |
-| +4.0 EV | ~1280 nits (default) |
+| +4.0 EV | ~1280 nits |
 
-This is a ceiling, not a target. With *Fit the gain map range to the image* on
-(the default) the encoder measures how much headroom the photo actually uses,
-stores that as the gain map's maximum boost, and declares it as the file's
-required headroom.
+Reach for one only to hold a set down deliberately. A decoder applies the gain
+scaled by how much headroom the display has relative to what the file asks for,
+so a photo that needs 1.6 stops but claims 4 renders at half strength on a
+display with 2 stops of headroom — plenty for that photo. Declaring more than
+you need costs brightness everywhere.
 
-That last part matters more than it sounds. A decoder applies the gain scaled
-by how much headroom the display has relative to what the file asks for. A
-photo that needs 1.6 stops but claims to need 4 would render at half strength
-on a display with 2 stops of headroom — plenty for that photo — so the file
-asks for what it measured.
+### Depth
 
-### Base colour space
+How much local contrast the base image keeps. The encoder splits the picture
+into a smooth base and the detail riding on it, compresses only the base, and
+hands the detail back at this strength. 1.0 reproduces what the render had;
+**1.25** is the default and puts more tonal separation into the base than a
+plain SDR export carries.
 
-The colour space of the SDR image everything else sees. **Display P3** is the
-recommended default: wide enough for modern displays, and what Apple and
-Android write. **sRGB** for maximum compatibility with old software, **Rec.
-2020** when the rest of your pipeline is.
-
-### Gain map resolution and channels
-
-A monochrome gain map at 1:2 is the default because it is nearly free: on a
-45 MP frame it adds about 12% to the file size, where a full-resolution
-three-channel map adds around 45%. Choose **RGB** only if your highlights change
-hue as they brighten — coloured neon, stained glass, sunsets through smoke.
+This matters beyond the SDR fallback. Any display without the file's full
+headroom shows a blend anchored on the base image, so *Depth* is visible on most
+HDR screens too — measured against Lightroom at half a stop of display headroom,
+it is worth 12.6% more highlight separation.
 
 ### Baseline JPEG quality
 
-Standard JPEG quality for the SDR image, 60 to 100. The gain map has its own
-quality setting in the Advanced section (default 50); it is a smooth control
-signal, so it tolerates far more compression than the picture does.
+Standard JPEG quality for the SDR image, 60 to 100, and the file size control.
+The gain map is always written at full precision — full resolution, three
+channels, 4:4:4 — because every way of shrinking it costs more colour accuracy
+than the bytes it saves. Measured on a 24 MP frame: quality 70 gives 8.0 MB,
+80 gives 9.2 MB, 90 gives 11.8 MB, and the colour error moves from 0.063 EV to
+0.051 EV across that whole range. Above 90 costs bytes and measures the same.
 
 ### Advanced
 
-* **Tone mapping** — how HDR highlights are rolled into the SDR base.
-  *Reinhard* (default) keeps shadows and midtones untouched and compresses only
-  the top end. *Filmic* rolls off earlier for a flatter look. *Hard clip*
-  simply clips above white, which maximises SDR contrast and puts all the HDR
-  information in the gain map.
-* **SDR base look** — *Brightness lift* (0.43 EV) and *Contrast* (1.14) shape
-  the SDR base, i.e. what everything without an HDR display shows. A plain tone
-  curve lands about a quarter stop dark and flat compared to a hand-graded SDR
-  edit; these correct for that. Neither changes the HDR rendition — the gain
-  map is measured against whatever base they produce. Press *Neutral* for an
-  unshaped base. These defaults are borrowed from a reference implementation
-  and were tuned on one photo and one photographer's taste, so treat them as a
-  starting point rather than a truth.
-* **Highlight measurement** — *Softened* (the default) averages the image down
-  before measuring its peak, so a few hot pixels or a speck of sensor noise
-  cannot define the headroom for the whole frame. *Exact peak* uses the true
-  per-pixel maximum; use it if you have a genuinely tiny highlight that matters
-  and you would rather spend gain map precision on it.
-* **Gain map quality** — 50 by default. A gain map is a smooth luminance ratio,
-  so JPEG artefacts in it are not visually significant the way they are in the
-  picture; 50 is what current camera pipelines write and costs roughly a third
-  the bytes of 85.
-* **Gain map gamma** — the encoding curve for the stored gain values, 2.2 by
-  default per the build spec. Decoders read this from the metadata.
+* **Base colour space** — the colour space of the SDR image everything else
+  sees. **Display P3** is the recommended default: wide enough for modern
+  displays, and what Apple and Android write. **sRGB** for maximum compatibility
+  with old software, **Rec. 2020** when the rest of your pipeline is.
 * **Rendered encoding / primaries** — normally *Detect from the rendered file*,
   which reads the ICC profile Lightroom embedded. Override these if you have
   configured Lightroom to render something else, for example Rec. 2100 PQ.
-* **Keep the intermediate TIFF** — leaves the render on disk next to the JPEG.
-  Useful when reporting a problem.
+* **PQ/HLG diffuse white** — the nits that map to SDR white when the render is
+  PQ or HLG, which is what Lightroom writes for an HDR export. 203 is the
+  standard reference and should not need changing.
+* **Copy Exif, GPS and copyright from the render**, **Add the exported JPEGs to
+  this catalogue**, and **Keep the intermediate TIFF** — housekeeping. The last
+  leaves the render on disk next to the JPEG, which is what to send if you are
+  reporting a problem.
 
 ## Troubleshooting
 

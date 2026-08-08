@@ -28,23 +28,33 @@ const char kUsage[] =
     "\n"
     "SDR base image look (affects only the rendition seen without an HDR\n"
     "display; the HDR result is unchanged, because the gain map is measured\n"
-    "against whatever base these produce):\n"
-    "  --sdr-lift <EV>          Brighten the base by this many stops. Applied\n"
-    "                           as an exposure gain on the tone-mapped image,\n"
-    "                           so highlights pushed past white clip in the\n"
-    "                           base and are handed back by the gain map\n"
-    "                           (default 0.43, 0 disables).\n"
-    "  --sdr-contrast <x>       Contrast about a linear mid-grey pivot,\n"
-    "                           applied as a luminance-derived scale on RGB so\n"
-    "                           saturation is untouched (default 1.14,\n"
-    "                           1.0 disables).\n"
+    "against whatever base these produce). Both are solved from the image by\n"
+    "default — how much the tone curve darkened a frame depends on where its\n"
+    "tones sit, so one fixed pair of numbers cannot be right for every photo:\n"
+    "  --auto-shape             Solve the lift and contrast from the image\n"
+    "                           (the default; use this to override an earlier\n"
+    "                           --sdr-lift or --sdr-contrast).\n"
+    "  --sdr-lift <EV>          Brighten the base by this many stops, instead\n"
+    "                           of solving it. Applied as an exposure gain on\n"
+    "                           the tone-mapped image, so highlights pushed\n"
+    "                           past white clip in the base and are handed back\n"
+    "                           by the gain map. 0 disables.\n"
+    "  --sdr-contrast <x>       Contrast about a linear mid-grey pivot, instead\n"
+    "                           of solving it. Applied as a luminance-derived\n"
+    "                           scale on RGB so saturation is untouched.\n"
+    "                           1.0 disables.\n"
     "\n"
     "Gain map tuning:\n"
     "  --gainmap-quality <n>    JPEG quality of the gain map (default 50).\n"
     "  --gamma <g>              Gain map encoding gamma (default 2.2).\n"
     "  --offset-sdr <v>         SDR offset constant (default 0.015625).\n"
     "  --offset-hdr <v>         HDR offset constant (default 0.015625).\n"
-    "  --tone-map <name>        reinhard (default), filmic or clip.\n"
+    "  --tone-map <name>        local (default), reinhard, filmic or clip. Only\n"
+    "                           local preserves highlight separation; the\n"
+    "                           others are curves, and a curve cannot.\n"
+    "  --sdr-detail <x>         Local tone mapping only: how much of the detail\n"
+    "                           layer is put back over the compressed base\n"
+    "                           (default 1.0 = in full, 0 = a plain shoulder).\n"
     "  --peak-detect <name>     softened (default) averages the image down\n"
     "                           before measuring its peak, so a few hot pixels\n"
     "                           cannot define the headroom; exact uses the\n"
@@ -67,7 +77,12 @@ const char kUsage[] =
     "  --no-xmp                 Do not write the Adobe hdrgm XMP blocks.\n"
     "  --no-optimize            Use the standard Huffman tables (faster, and\n"
     "                           roughly 5 percent larger).\n"
-    "  --no-chroma-subsample    Encode the base image as 4:4:4.\n"
+    "  --chroma-subsample       Encode the base image as 4:2:0. The default is\n"
+    "                           4:4:4: the gain map is measured against the\n"
+    "                           base as written, so chroma error in the base\n"
+    "                           lands in the HDR rendition. Measured, 4:2:0\n"
+    "                           costs more accuracy than it saves bytes.\n"
+    "  --no-chroma-subsample    Force 4:4:4 (already the default).\n"
     "  --threads <n>            Worker threads (default: all cores).\n"
     "  --json                   Print a one-line JSON report on stdout.\n"
     "  --verbose                Log progress to stderr.\n"
@@ -103,6 +118,7 @@ const char* usageText() { return kUsage; }
 bool parseArguments(int argc, char** argv, EncoderOptions* out, bool* handled) {
   *handled = false;
   std::string v;
+  bool autoShapeRequested = false;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     if (a == "--help" || a == "-h") {
@@ -157,7 +173,7 @@ bool parseArguments(int argc, char** argv, EncoderOptions* out, bool* handled) {
     } else if (a == "--tone-map") {
       needValue(argc, argv, i++, "--tone-map", &v);
       if (!parseToneMap(v, &out->toneMap))
-        fail("unknown --tone-map: " + v + " (use reinhard, filmic or clip)");
+        fail("unknown --tone-map: " + v + " (use local, reinhard, filmic or clip)");
     } else if (a == "--peak-detect") {
       needValue(argc, argv, i++, "--peak-detect", &v);
       if (!parsePeakDetect(v, &out->peakDetect))
@@ -167,12 +183,30 @@ bool parseArguments(int argc, char** argv, EncoderOptions* out, bool* handled) {
       out->sdrLiftEV = toFloat(v, "--sdr-lift");
       if (out->sdrLiftEV < 0.0f || out->sdrLiftEV > 3.0f)
         fail("--sdr-lift must be between 0 and 3 EV");
+      out->sdrShape = SdrShapeMode::Manual;
     } else if (a == "--sdr-contrast") {
       needValue(argc, argv, i++, "--sdr-contrast", &v);
       out->sdrContrast = toFloat(v, "--sdr-contrast");
       if (out->sdrContrast < 0.5f || out->sdrContrast > 2.0f)
         fail("--sdr-contrast must be between 0.5 and 2.0");
-    } else if (a == "--no-auto-max-boost") {
+      out->sdrShape = SdrShapeMode::Manual;
+    } else if (a == "--sdr-detail") {
+      needValue(argc, argv, i++, "--sdr-detail", &v);
+      out->sdrDetail = toFloat(v, "--sdr-detail");
+      if (out->sdrDetail < 0.0f || out->sdrDetail > 2.0f)
+        fail("--sdr-detail must be between 0 and 2");
+    } else if (a == "--sdr-knee") {
+      needValue(argc, argv, i++, "--sdr-knee", &v);
+      out->sdrKnee = toFloat(v, "--sdr-knee");
+      if (out->sdrKnee > 0.0f || out->sdrKnee < -6.0f)
+        fail("--sdr-knee must be between -6 and 0 EV");
+    } else if (a == "--sdr-edge") {
+      needValue(argc, argv, i++, "--sdr-edge", &v);
+      out->sdrEdge = toFloat(v, "--sdr-edge");
+      if (out->sdrEdge <= 0.0f) fail("--sdr-edge must be positive");
+    } else if (a == "--auto-shape") {
+      autoShapeRequested = true;
+        } else if (a == "--no-auto-max-boost") {
       out->autoMaxBoost = false;
     } else if (a == "--input-primaries") {
       needValue(argc, argv, i++, "--input-primaries", &v);
@@ -195,6 +229,11 @@ bool parseArguments(int argc, char** argv, EncoderOptions* out, bool* handled) {
       out->optimizeHuffman = false;
     } else if (a == "--no-chroma-subsample") {
       out->chromaSubsample = false;
+    } else if (a == "--chroma-subsample") {
+      // The positive form exists because the default flipped to 4:4:4; without
+      // it there was no way to ask for 4:2:0 at all, and --no-chroma-subsample
+      // had quietly become a no-op.
+      out->chromaSubsample = true;
     } else if (a == "--threads") {
       needValue(argc, argv, i++, "--threads", &v);
       int n = toInt(v, "--threads");
@@ -208,6 +247,11 @@ bool parseArguments(int argc, char** argv, EncoderOptions* out, bool* handled) {
       fail("unknown argument: " + a);
     }
   }
+
+  // Applied after the loop so it wins regardless of order: a preset still
+  // carrying an old --sdr-lift can be moved onto the solver by appending
+  // one flag, without having to strip the old one out first.
+  if (autoShapeRequested) out->sdrShape = SdrShapeMode::Auto;
 
   if (out->inputPath.empty()) fail("missing --input");
   if (out->outputPath.empty()) fail("missing --output");

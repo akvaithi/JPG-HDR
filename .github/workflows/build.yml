@@ -43,6 +43,17 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install exiftool --no-progress -y
 
+      # macOS ships the universal binary the plug-in needs, but a universal
+      # build cannot link Homebrew's single-architecture libjpeg, so the decode
+      # round-trip runs in a native build first. Linux covers it too; this keeps
+      # macOS honest about its own toolchain.
+      - name: Test natively (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cmake -S encoder -B encoder/build-native -DCMAKE_BUILD_TYPE=Release
+          cmake --build encoder/build-native --parallel
+          ctest --test-dir encoder/build-native --output-on-failure
+
       - name: Build and test (Unix)
         if: runner.os != 'Windows'
         run: ./scripts/build.sh

@@ -16,6 +16,15 @@ local IsoEncoder = {}
 
 local isWindows = WIN_ENV == true
 
+-- Lightroom builds dialog sections on the main thread, where any yielding call
+-- fails with "We can only wait from within a task" (or, from inside a binding,
+-- "Yielding is not allowed within a C or metamethod call"). LrTasks.execute
+-- yields, so everything that shells out has to check this first and let the UI
+-- fill itself in from a task instead.
+local function canYield()
+	return LrTasks.canYield ~= nil and LrTasks.canYield() == true
+end
+
 --- Absolute path of the platform binary inside the plugin bundle.
 function IsoEncoder.binaryPath()
 	local dir = LrPathUtils.child(_PLUGIN.path, 'bin')
@@ -33,8 +42,10 @@ function IsoEncoder.checkAvailable()
 	if not LrFileUtils.exists(path) then
 		return false, LOC('$$$/Iso21496/NoBinary=The ISO 21496-1 encoder is missing from the plug-in: ^1', path)
 	end
-	if not isWindows and not executableChecked then
-		-- Zip archives and some download paths drop the executable bit.
+	if not isWindows and not executableChecked and canYield() then
+		-- Zip archives and some download paths drop the executable bit. This
+		-- shells out, so it is skipped outside a task; every path that actually
+		-- runs the encoder is inside one, and gets it done there.
 		LrTasks.execute(string.format('chmod +x %q', path))
 		executableChecked = true
 	end
@@ -131,18 +142,37 @@ function IsoEncoder.run(params)
 	return true, report
 end
 
---- Version string of the bundled binary, or nil.
+local cachedVersion, versionQueried = nil, false
+
+--- Version string of the bundled binary, or nil if it is missing, would not run,
+--- or has not been asked yet. Running the binary yields, so a caller outside a
+--- task gets nil rather than an error: dialogs show a placeholder and call this
+--- again from LrTasks.startAsyncTask. The answer is cached, so that second call
+--- is the only subprocess per session.
 function IsoEncoder.version()
+	if versionQueried then return cachedVersion end
 	local ok = IsoEncoder.checkAvailable()
-	if not ok then return nil end
+	if not ok or not canYield() then return nil end
+
 	local tmp = LrPathUtils.child(LrPathUtils.getStandardFilePath('temp'),
 		'iso21496_version.txt')
 	local command = buildCommand(IsoEncoder.binaryPath(), { '--version' }, tmp, tmp .. '.err')
-	if LrTasks.execute(command) ~= 0 then return nil end
+	local exitCode = LrTasks.execute(command)
 	local text = readAll(tmp)
 	LrFileUtils.delete(tmp)
 	LrFileUtils.delete(tmp .. '.err')
-	return (text:gsub('%s+$', ''))
+
+	versionQueried = true
+	cachedVersion = exitCode == 0 and (text:gsub('%s+$', '')) or nil
+	return cachedVersion
+end
+
+--- Drops what was cached about the binary, so the next call re-examines it.
+--- The Plug-in Manager's test button uses this after the user has fixed
+--- something — a quarantine flag, a missing file — that we already gave up on.
+function IsoEncoder.forget()
+	cachedVersion, versionQueried = nil, false
+	executableChecked = false
 end
 
 return IsoEncoder
