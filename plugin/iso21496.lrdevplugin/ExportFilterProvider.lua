@@ -58,10 +58,10 @@ end
 function exportFilterProvider.postProcessRenderedPhotos(functionContext, filterContext)
 	local settings = filterContext.propertyTable
 	IsoSettings.applyDefaults(settings)
+	IsoLogger.refresh()
 
 	local available, message = IsoEncoder.checkAvailable()
 	local valid, problem = IsoSettings.validate(settings)
-	local arguments = IsoSettings.buildArguments(settings)
 
 	local session = filterContext.sourceExportSession
 	local total = session and session:countRenditions() or 0
@@ -81,10 +81,11 @@ function exportFilterProvider.postProcessRenderedPhotos(functionContext, filterC
 			-- is waiting for. renditionToSatisfy.destinationPath is the same
 			-- file for the last filter in the chain, hence the temp name.
 			local temp = LrPathUtils.replaceExtension(intermediate, 'iso21496.tmp')
+			-- Built per photo: the develop-settings hints differ for each one.
 			local ok, report, err = IsoEncoder.run {
 				input = intermediate,
 				output = temp,
-				arguments = arguments,
+				arguments = IsoSettings.argumentsForPhoto(settings, sourceRendition.photo),
 			}
 
 			if not ok then

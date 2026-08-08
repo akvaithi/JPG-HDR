@@ -84,6 +84,10 @@ function exportServiceProvider.processRenderedPhotos(functionContext, exportCont
 	local exportSession = exportContext.exportSession
 	local settings = exportContext.propertyTable
 	IsoSettings.applyDefaults(settings)
+	-- Re-read the logging preference. IsoLogger caches it on first use, so a
+	-- checkbox ticked after the plug-in loaded would otherwise not take effect
+	-- until it was reloaded — which is why turning logging on produced no log.
+	IsoLogger.refresh()
 
 	local available, message = IsoEncoder.checkAvailable()
 	if not available then
@@ -113,7 +117,6 @@ function exportServiceProvider.processRenderedPhotos(functionContext, exportCont
 		if choice == 'cancel' then return end
 	end
 
-	local arguments = IsoSettings.buildArguments(settings)
 	local total = exportSession:countRenditions()
 
 	local progress = exportContext:configureProgress {
@@ -150,10 +153,11 @@ function exportServiceProvider.processRenderedPhotos(functionContext, exportCont
 			progress:setCaption(LOC('$$$/Iso21496/ProgressEncode=Encoding gain map for ^1',
 				LrPathUtils.leafName(finalPath)))
 
+			-- Built per photo: the develop-settings hints differ for each one.
 			local ok, report, err = IsoEncoder.run {
 				input = intermediate,
 				output = finalPath,
-				arguments = arguments,
+				arguments = IsoSettings.argumentsForPhoto(settings, rendition.photo),
 			}
 
 			if ok then

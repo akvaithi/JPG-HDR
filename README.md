@@ -42,50 +42,69 @@ menu. Full instructions, including the Gatekeeper step on macOS, are in
 
 ## Export settings
 
-The five controls from section 3.1 of the spec, with their defaults:
+Three controls, with their defaults:
 
 | Setting | Options | Default |
 |---|---|---|
-| Target HDR headroom | +1.0 / +2.0 / +3.0 / +4.0 EV | **+4.0 EV** (~1280 nits) |
-| Base colour space | Display P3 / sRGB / Rec. 2020 | **Display P3** |
-| Gain map resolution | 1:1 / 1:2 / 1:4 | **1:2** |
-| Gain map channels | Monochrome / RGB | **Monochrome** |
+| HDR headroom | Match the render / cap at +1.0…+4.0 EV | **Match the render** |
+| Depth | 0–2 | **1.25** |
 | Baseline JPEG quality | 60–100 | **90** |
 
-The headroom setting is a *ceiling*, not a target: the encoder measures what
-the photo actually needs and declares that, so displays with partial headroom
-render it at full strength rather than scaling the effect down.
+*Match the render* declares the headroom the photo actually turned out to need,
+which is the same figure Lightroom shows for it — both are reading the same
+render. A decoder scales the gain it applies by
+`display_headroom / declared_headroom`, so a ceiling above what the image uses
+only ever makes it render dim; cap it to hold a set down deliberately, not by
+default.
 
-An *Advanced* section adds the SDR base look (brightness lift and contrast),
-tone mapping operator, gain map quality and gamma, highlight measurement mode,
-metadata copying, and overrides for how the rendered intermediate is
-interpreted. Everything is also reachable from the command line —
-`iso21496_encoder --help`.
+*Baseline JPEG quality* is also the size control. The gain map is always written
+at full precision, because every way of shrinking it costs more accuracy than
+the bytes it saves. Measured on a 24 MP frame:
+
+| Quality | File | Highlight colour error |
+|---|---|---|
+| 70 | 8.0 MB | 0.063 EV |
+| 80 | 9.2 MB | 0.056 EV |
+| **90** | **11.8 MB** | **0.051 EV** |
+| 95 | 15.2 MB | 0.051 EV — no measurable gain |
+
+Everything else that used to be a setting — gain map resolution, channels,
+quality, encoding gamma, base chroma subsampling, the tone curve — was swept
+against a Lightroom reference export and each turned out to have one answer that
+is simply better. They are the encoder's defaults now. An *Advanced* section
+keeps base colour space, the rendered-encoding overrides for troubleshooting,
+and the housekeeping checkboxes. Everything remains reachable from the command
+line — `iso21496_encoder --help`.
 
 ### The SDR base look
 
-A gain map file carries two renditions. The HDR one is fixed by the photo; the
-SDR one — what everything without an HDR display shows — is a choice. A plain
-tone curve lands about a quarter of a stop under where a hand-graded SDR edit
-of the same photo would sit, and flatter, so the base is shaped by default:
+A gain map file carries two renditions, and the SDR one is a choice. It is also
+not only a fallback: a decoder renders
+`(SDR + offset) · 2^(gain · w) − offset` where `w` is how much of the file's
+headroom your display has, so **every display short of full headroom shows a
+blend anchored on the base image**. Measured against Lightroom's export of the
+same edit, at 0.5 EV of display headroom our rendition carries 12.6% more
+highlight separation; at full headroom the two agree to 0.008 EV.
 
-| Control | Default | Effect |
-|---|---|---|
-| Brightness lift | **0.43 EV** | Exposure gain on the tone-mapped base; highlights pushed past white clip in the base and are handed back by the gain map |
-| Contrast | **1.14** | Power law about a linear mid-grey pivot, applied as a luminance-derived scale on RGB so saturation is untouched |
+That is why the base is built by a local operator rather than a curve. A curve
+maps every pixel of a given luminance to the same output, so it can make the
+picture lighter or darker but never less flat — whatever separation the
+compression takes out of the highlights is gone. Instead a self-guided filter
+splits log luminance into a smooth base and the detail riding on it, only the
+base goes through the shoulder, and the detail is added back at *Depth*
+strength. Highlights are pulled into range while the separation inside them
+survives.
 
-Together these put mid grey at +0.21 EV relative to the source instead of
-−0.24 EV. Neither affects the HDR rendition — the gain map is measured against
-whatever base they produce, and the two cancel to within 0.008 EV (measured,
-and asserted by the test suite). Set the lift to 0 and the contrast to 1.0, or
-press *Neutral* in the dialog, for an unshaped base.
+None of it moves the HDR rendition: the gain map is measured against whatever
+base it produces, and the two cancel to within 0.017 EV (measured, and asserted
+by the test suite).
 
 ## Using the encoder directly
 
 ```bash
 iso21496_encoder --input render.tif --output photo.jpg \
-    --headroom 4.0 --color-space DisplayP3 --subsample 2 \
-    --channels mono --quality 90 --json
+    --headroom 10 --color-space DisplayP3 --quality 90 \
+    --tone-map local --sdr-detail 1.25 --json
 ```
 
 It reads uncompressed, LZW or PackBits TIFFs with 8-bit, 16-bit or 32-bit float
@@ -97,36 +116,41 @@ libraries beyond the C++ standard library.
 * A baseline JPEG in Display P3 (or sRGB / Rec. 2020) with an embedded ICC
   profile, the Exif and GPS metadata carried over from the render, and an MPF
   index describing both images.
-* A second JPEG holding the gain map — single-channel and half resolution by
-  default — carrying the `urn:iso:std:iso:ts:21496:-1` APP2 payload.
+* A second JPEG holding the gain map — three channels at full resolution,
+  carrying the `urn:iso:std:iso:ts:21496:-1` APP2 payload with a measured
+  per-channel range.
 * Adobe `hdrgm:1.0` XMP on both images, so decoders that predate ISO 21496-1
-  still find the gain map.
+  still find the gain map, with per-channel values written the way Lightroom
+  writes them.
 
 ## Measured behaviour
 
-From a 45 MP (8192 × 5464) synthetic HDR frame with fine grain, on four cores:
+Against Lightroom Classic's own HDR export of the same edit — a 24 MP frame,
+both files decoded through macOS ImageIO and compared in linear Display P3:
 
 | | |
 |---|---|
-| Encode time | 3.8 s |
-| Peak memory | 678 MB |
-| Base JPEG | 3.20 MB |
-| Gain map (mono, 1:2) | 0.39 MB — **+12.2%** |
-| Gain map (RGB, 1:1) | 1.43 MB — +44.7% |
-| HDR reconstruction error | 0.43% mean, 2.4% worst case in highlights |
-| HDR shift from SDR shaping | 0.008 EV mean |
+| HDR agreement, whole frame | **0.006 EV** mean absolute |
+| Highlight colour (hue drift, p95) | **0.051 EV** |
+| Highlight saturation | **+0.002 EV** |
+| Declared headroom | 2.3001 against Lightroom's 2.2999 |
+| File size | 11.8 MB against Lightroom's 15.5 MB |
+| HDR shift from the SDR base | 0.017 EV mean |
 
-The +12.2% figure comes in under the 15–25% band the spec asks for, and the
-RGB 1:1 comparison shows what the default is buying. A real photograph's gain
-map is smoother than this deliberately grainy fixture, so the overhead in
-practice tends to be lower still.
+On a 45 MP (8192 × 5464) synthetic frame with fine grain: 1.6 s and 1.7 GB
+peak. The memory is dominated by the float buffer the measured gain range needs
+and by holding the uncompressed TIFF; both scale linearly with pixel count.
 
 ## Status
 
-Implemented in full, and verified everywhere that does not need Adobe software
-or an HDR panel. **Nothing has yet run inside Lightroom Classic, and no output
-has been opened on an HDR display** — see [docs/HANDOFF.md](docs/HANDOFF.md)
-for the first-export checklist, the known risks, and what to build next.
+Running in Lightroom Classic, with output verified on an HDR display and
+measured against Lightroom's own gain map export.
+
+The tuning — the shoulder position, the depth strength, the gain map settings —
+was swept against **one photograph**. The physics generalises; the taste may
+not. A reference set spanning low-key, backlit and strongly saturated frames is
+the next thing this needs, and haloing on a hard backlit edge is the specific
+failure to look for, since the one test frame has no such edge.
 
 ## Repository layout
 

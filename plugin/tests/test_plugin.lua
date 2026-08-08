@@ -64,21 +64,14 @@ local function join(list) return table.concat(list, ' ') end
 
 local function testDefaults()
 	local p = IsoSettings.applyDefaults({})
-	checkEqual(p.iso_target_headroom, '4.0', 'default headroom is +4 EV')
+	checkEqual(p.iso_target_headroom, 'match', 'headroom defaults to matching the render')
 	checkEqual(p.iso_color_space, 'DisplayP3', 'default colour space is Display P3')
-	checkEqual(p.iso_gainmap_subsample, '2', 'default gain map subsampling is 1:2')
-	checkEqual(p.iso_gainmap_channels, 'Monochrome', 'default gain map is monochrome')
 	checkEqual(p.iso_jpeg_quality, 90, 'default JPEG quality is 90')
-	checkEqual(p.iso_gainmap_quality, 50, 'default gain map quality is 50')
-	checkEqual(p.iso_sdr_lift, 0.43, 'default SDR lift is 0.43 EV')
-	checkEqual(p.iso_sdr_contrast, 1.14, 'default SDR contrast is 1.14')
-	checkEqual(p.iso_peak_detect, 'softened', 'highlight measurement is softened')
 
 	local fields = IsoSettings.exportPresetFields()
 	local seen = {}
 	for _, field in ipairs(fields) do seen[field.key] = true end
 	for _, key in ipairs { 'iso_target_headroom', 'iso_color_space',
-	                       'iso_gainmap_subsample', 'iso_gainmap_channels',
 	                       'iso_jpeg_quality' } do
 		check(seen[key], 'preset fields include ' .. key)
 	end
@@ -86,78 +79,129 @@ end
 
 local function testArguments()
 	local args = join(IsoSettings.buildArguments({}))
-	check(args:find('--headroom 4%.0'), 'arguments carry the headroom')
+	check(args:find('--headroom 10%.0'), 'matching the render passes no real cap')
 	check(args:find('--color%-space DisplayP3'), 'arguments carry the colour space')
-	check(args:find('--subsample 2'), 'arguments carry the subsample factor')
-	check(args:find('--channels mono'), 'arguments carry the channel mode')
 	check(args:find('--quality 90'), 'arguments carry the quality')
 	check(args:find('--json'), 'arguments request the JSON report')
-	check(not args:find('--no%-auto%-max%-boost'), 'auto max boost is on by default')
-	check(args:find('--gainmap%-quality 50'), 'arguments carry the gain map quality')
-	check(args:find('--sdr%-lift 0%.430'), 'arguments carry the SDR lift')
-	check(args:find('--sdr%-contrast 1%.140'), 'arguments carry the SDR contrast')
-	check(args:find('--peak%-detect softened'), 'arguments carry the peak detection mode')
 
-	-- A neutral base must be reachable, and must stay neutral on the wire.
-	local neutral = join(IsoSettings.buildArguments {
-		iso_sdr_lift = 0, iso_sdr_contrast = 1.0,
-	})
-	check(neutral:find('--sdr%-lift 0%.000'), 'the lift can be switched off')
-	check(neutral:find('--sdr%-contrast 1%.000'), 'the contrast can be switched off')
+	-- Automatic means the local operator. A curve cannot give the base depth, so
+	-- the default must not silently be one: passing --tone-map reinhard here
+	-- would quietly turn the whole feature off.
+	check(args:find('--tone%-map local'), 'the automatic base asks for local tone mapping')
+	check(args:find('--sdr%-detail 1%.25'), 'the automatic base carries the depth amount')
+	check(not args:find('--sdr%-lift'), 'no lift is passed: the operator has none')
+	check(not args:find('--sdr%-contrast'), 'no contrast is passed either')
+	check(not args:find('--tone%-map reinhard'), 'the base image is never a curve')
 
-	-- Out-of-range shaping values must be clamped to what the encoder accepts,
-	-- which rejects anything outside 0-3 EV and 0.5-2.0.
-	local wild = join(IsoSettings.buildArguments {
-		iso_sdr_lift = 99, iso_sdr_contrast = 9,
-	})
-	check(wild:find('--sdr%-lift 3%.000'), 'the lift is clamped to 3 EV')
-	check(wild:find('--sdr%-contrast 2%.000'), 'the contrast is clamped to 2.0')
+	-- Everything with one measured right answer is the encoder's default now.
+	-- Passing it from here would let a preset put a worse value back.
+	for _, flag in ipairs { '--subsample', '--channels', '--gainmap%-quality',
+	                       '--gamma', '--peak%-detect', '--no%-chroma%-subsample',
+	                       '--no%-auto%-max%-boost', '--sdr%-lift', '--sdr%-contrast' } do
+		check(not args:find(flag), 'the plug-in does not pass ' .. flag:gsub('%%', ''))
+	end
+
+	-- The depth amount is clamped to what the encoder accepts.
+	local deep = join(IsoSettings.buildArguments { iso_sdr_detail = 99 })
+	check(deep:find('--sdr%-detail 2%.00'), 'the depth amount is clamped to 2')
 
 	local custom = IsoSettings.buildArguments {
 		iso_target_headroom = '2.0',
 		iso_color_space = 'sRGB',
-		iso_gainmap_subsample = '4',
-		iso_gainmap_channels = 'RGB',
 		iso_jpeg_quality = 75,
-		iso_auto_max_boost = false,
 		iso_copy_metadata = false,
 		iso_input_transfer = 'pq',
 		iso_pq_diffuse_white = 100,
 	}
 	local text = join(custom)
-	check(text:find('--headroom 2%.0'), 'custom headroom')
+	check(text:find('--headroom 2%.0'), 'a headroom cap is passed as the cap')
 	check(text:find('--color%-space sRGB'), 'custom colour space')
-	check(text:find('--subsample 4'), 'custom subsampling')
-	check(text:find('--channels rgb'), 'RGB gain map selected')
 	check(text:find('--quality 75'), 'custom quality')
-	check(text:find('--no%-auto%-max%-boost'), 'auto max boost can be disabled')
 	check(text:find('--no%-exif'), 'metadata copying can be disabled')
 	check(text:find('--input%-transfer pq'), 'input transfer override')
 	check(text:find('--pq%-diffuse%-white 100'), 'diffuse white accompanies PQ')
 
 	-- Out-of-range values are clamped rather than passed through.
 	local clamped = join(IsoSettings.buildArguments {
-		iso_jpeg_quality = 5000, iso_gainmap_subsample = '9',
+		iso_jpeg_quality = 5000,
 	})
 	check(clamped:find('--quality 100'), 'quality is clamped to 100')
-	check(clamped:find('--subsample 4'), 'subsampling is clamped to 4')
+end
+
+-- A preset written before a default changed keeps overriding it, silently and
+-- forever. Only values that equal the old default may be migrated: a deliberate
+-- choice has to survive.
+local function testPresetMigration()
+	local old = IsoSettings.applyDefaults {
+		iso_gainmap_channels = 'Monochrome',
+		iso_target_headroom = '4.0',
+		iso_gainmap_gamma = '2.2',
+		iso_sdr_shape = 'manual',
+		iso_sdr_lift = 0.9,
+	}
+	checkEqual(old.iso_sdr_shape, nil, 'a stale base image mode is cleared')
+	checkEqual(old.iso_sdr_lift, nil, 'a stale manual lift is cleared')
+	checkEqual(old.iso_gainmap_channels, nil,
+		'a stale gain map channel setting is cleared, not honoured')
+	checkEqual(old.iso_gainmap_gamma, nil, 'a stale gamma is cleared')
+	checkEqual(old.iso_target_headroom, 'match', 'a stale +4 EV cap migrates to matching the render')
+	checkEqual(old.iso_settings_version, IsoSettings.settingsVersion,
+		'the preset is stamped with the current generation')
+
+	-- Lightroom fills a missing preset field with the value declared in the
+	-- defaults, so that declared value must be the *old* generation or every
+	-- stale preset would be stamped current and skip migration entirely.
+	check(IsoSettings.defaults.iso_settings_version < IsoSettings.settingsVersion,
+		'the declared version default is older than the current generation')
+	local viaLightroom = IsoSettings.applyDefaults {
+		iso_gainmap_channels = 'Monochrome',
+		iso_settings_version = IsoSettings.defaults.iso_settings_version,
+	}
+	checkEqual(viaLightroom.iso_gainmap_channels, nil,
+		'a preset carrying the declared version default still migrates')
+
+	-- A preset already at this generation is left alone, even where its values
+	-- match what the old defaults happened to be.
+	local deliberate = IsoSettings.applyDefaults {
+		iso_settings_version = IsoSettings.settingsVersion,
+		iso_target_headroom = '4.0',
+	}
+	checkEqual(deliberate.iso_sdr_shape, nil, 'the base image mode is gone entirely')
+	checkEqual(deliberate.iso_target_headroom, '4.0', 'a deliberate cap survives')
+
+	-- Values that were never the old default are choices, and are kept.
+	local chosen = IsoSettings.applyDefaults { iso_target_headroom = '2.0' }
+	checkEqual(chosen.iso_target_headroom, '2.0', 'a non-default cap is not migrated')
+
+	-- A fresh export is not a preset and must simply get the defaults.
+	local fresh = IsoSettings.applyDefaults({})
+	checkEqual(fresh.iso_target_headroom, 'match', 'a fresh export matches the render')
+
+	-- Migration runs on every export, so it has to be idempotent.
+	local twice = IsoSettings.applyDefaults(IsoSettings.applyDefaults {
+		iso_gainmap_channels = 'Monochrome', iso_target_headroom = '4.0',
+	})
+	checkEqual(twice.iso_gainmap_channels, nil, 'migrating twice is stable')
+	checkEqual(twice.iso_target_headroom, 'match', 'and does not migrate twice')
 end
 
 local function testValidation()
 	local ok = IsoSettings.validate(IsoSettings.applyDefaults({}))
 	check(ok, 'defaults validate')
+	ok = IsoSettings.validate(IsoSettings.applyDefaults { iso_target_headroom = 'match' })
+	check(ok, 'matching the render validates')
 	ok = IsoSettings.validate(IsoSettings.applyDefaults { iso_target_headroom = '0' })
 	check(not ok, 'zero headroom is rejected')
-	ok = IsoSettings.validate(IsoSettings.applyDefaults { iso_gainmap_subsample = '3' })
-	check(not ok, 'a subsample factor of 3 is rejected')
 	ok = IsoSettings.validate(IsoSettings.applyDefaults { iso_jpeg_quality = 0 })
 	check(not ok, 'a quality of 0 is rejected')
 end
 
 local function testSummary()
 	local s = IsoSettings.summary({})
-	check(s:find('%+4%.0 EV'), 'summary shows the headroom')
-	check(s:find('mono'), 'summary shows the gain map channels')
+	check(s:find('headroom from the render'), 'summary shows where the headroom comes from')
+	check(s:find('depth 1%.25'), 'summary shows the depth amount')
+	check(IsoSettings.summary { iso_target_headroom = '2.0' }:find('max %+2%.0 EV'),
+		'summary shows a headroom cap when one is set')
 end
 
 ---------------------------------------------------------------------- encoder
@@ -169,6 +213,56 @@ local function testEncoderPlumbing()
 	local version = IsoEncoder.version()
 	check(version ~= nil and version:match('^%d+%.%d+%.%d+$') ~= nil,
 		'reported encoder version looks like a version (' .. tostring(version) .. ')')
+end
+
+-- Lightroom builds dialog sections on the main thread, and the stub raises the
+-- way Lightroom does if anything shells out there. Both providers used to, and
+-- the Plug-in Manager logged "We can only wait from within a task" / "Yielding
+-- is not allowed within a C or metamethod call" instead of drawing the UI.
+local function testDialogsBuildOutsideATask()
+	IsoEncoder.forget()
+	stubs.inTask = false
+
+	check(IsoEncoder.checkAvailable(), 'the binary is still detected outside a task')
+	check(IsoEncoder.version() == nil, 'the version is not read outside a task')
+
+	local f = stubs.viewFactory()
+
+	local ExportDialogSections = require 'ExportDialogSections'
+	local properties = IsoSettings.applyDefaults({})
+	local built, err = pcall(ExportDialogSections.sectionsForBottomOfDialog, f, properties)
+	check(built, 'the export dialog sections build outside a task'
+		.. (built and '' or ': ' .. tostring(err)))
+
+	local PluginInfoProvider = require 'PluginInfoProvider'
+	local infoTable = {}
+	local infoBuilt, infoErr = pcall(PluginInfoProvider.sectionsForTopOfDialog, f, infoTable)
+	check(infoBuilt, 'the Plug-in Manager section builds outside a task'
+		.. (infoBuilt and '' or ': ' .. tostring(infoErr)))
+
+	-- Building the sections starts tasks, which is where the encoder is allowed
+	-- to run; the values they were waiting on must actually have arrived.
+	check(properties.iso_encoder_version ~= nil and
+		properties.iso_encoder_version:match('^%d+%.%d+%.%d+$') ~= nil,
+		'the export dialog resolves the encoder version from a task ('
+			.. tostring(properties.iso_encoder_version) .. ')')
+	check(infoTable.isoStatus ~= nil and infoTable.isoStatus:find('1%.') ~= nil,
+		'the Plug-in Manager resolves the encoder status from a task ('
+			.. tostring(infoTable.isoStatus) .. ')')
+
+	-- The version is display state, not a setting: writing it into a preset
+	-- would put a machine-specific string in every exported preset file.
+	local presetKeys = {}
+	for _, field in ipairs(IsoSettings.exportPresetFields()) do
+		presetKeys[field.key] = true
+	end
+	check(not presetKeys.iso_encoder_version,
+		'the encoder version is not an export preset field')
+
+	-- Cached now, so the main thread can read it without shelling out again.
+	check(IsoEncoder.version() ~= nil, 'the version is cached for the main thread')
+
+	stubs.inTask = true
 end
 
 local function testReportParsing()
@@ -194,18 +288,32 @@ local function testRealEncode(fixtureTiff)
 	check(ok, 'encoding a real TIFF succeeds' .. (ok and '' or ': ' .. tostring(err)))
 	if not ok then return end
 	check(report ~= nil, 'the encoder returned a report')
-	checkEqual(report.gainChannels, 1, 'report says the gain map is monochrome')
+
+	-- The default path is the local operator, which has no lift or contrast to
+	-- solve — reporting that it did would be a lie, and the gain map floor is
+	-- exactly zero because the operator never brightens the base.
+	checkEqual(report.autoShaped, false, 'no curve solver runs')
+	checkEqual(report.sdrLiftEV, 0, 'local tone mapping applies no lift')
+	checkEqual(report.sdrContrast, 1, 'local tone mapping applies no contrast')
+	checkEqual(report.minBoostLog2, 0, 'the local operator never needs a negative gain')
+
+	checkEqual(report.gainChannels, 3, 'the encoder defaults to a three-channel gain map')
 	check(report.totalBytes > 0, 'report says bytes were written')
 
 	-- The file must declare the headroom it needs, not the 4 EV ceiling the
 	-- default settings allow: a decoder scales the gain it applies by
 	-- display_headroom / declared_headroom.
+	-- The declared headroom is what the picture needs; the gain map's maximum is
+	-- what the base needs to get back there. They are related but not equal, and
+	-- forcing them equal is what truncated saturated highlights.
 	check(report.declaredHeadroom ~= nil and
-		math.abs(report.declaredHeadroom - report.maxBoostLog2) < 0.001,
-		'declared headroom matches the measured gain map maximum ('
+		math.abs(report.declaredHeadroom - report.measuredHeadroom) < 0.001,
+		'declared headroom is the measured headroom ('
 			.. tostring(report.declaredHeadroom) .. ')')
+	check(report.maxBoostLog2 > 0, 'the gain map spans a real range')
 	check(report.declaredHeadroom < 4.0, 'declared headroom is below the ceiling')
-	check(report.minBoostLog2 < 0, 'the lifted base gives the gain map a negative floor')
+	-- The local operator never brightens the base, so nothing needs darkening.
+	checkEqual(report.minBoostLog2, 0, 'the local operator needs no negative gain')
 
 	local f = io.open(out, 'rb')
 	local data = f:read('a')
@@ -243,8 +351,10 @@ end
 testDefaults()
 testArguments()
 testValidation()
+testPresetMigration()
 testSummary()
 testEncoderPlumbing()
+testDialogsBuildOutsideATask()
 testReportParsing()
 
 local fixture = arg[3]

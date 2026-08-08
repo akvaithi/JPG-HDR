@@ -21,6 +21,11 @@ struct EncodeReport {
   float declaredHeadroom = 0.0f;
   float measuredHeadroom = 0.0f;
   float truePeakHeadroom = 0.0f;
+  // The shaping that was applied, and whether it was solved or supplied.
+  bool autoShaped = false;
+  float sdrLiftEV = 0.0f;
+  float sdrContrast = 1.0f;
+  float midtoneAnchor = 0.0f;
   std::string inputPrimaries;
   std::string inputTransfer;
   double seconds = 0.0;

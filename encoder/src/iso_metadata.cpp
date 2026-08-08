@@ -204,6 +204,17 @@ std::string buildPrimaryXmp(size_t gainMapLength) {
   return os.str();
 }
 
+// The hdrgm attributes take one value per channel, comma separated, when the
+// map is multichannel — Lightroom writes "2.366608, 2.507721, 2.68985". Writing
+// only the first channel's number would tell an XMP-reading decoder (Android,
+// Chrome — the ones that do not read the ISO payload) to apply the red range to
+// all three, which is a hue shift in exactly the highlights the three channels
+// exist to keep apart.
+std::string perChannel(const float (&v)[3], bool multiChannel) {
+  if (!multiChannel) return fmt(v[0]);
+  return fmt(v[0]) + ", " + fmt(v[1]) + ", " + fmt(v[2]);
+}
+
 std::string buildGainMapXmp(const GainMapMetadata& m) {
   std::ostringstream os;
   os << "<?xpacket begin=\"\xEF\xBB\xBF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>"
@@ -212,11 +223,11 @@ std::string buildGainMapXmp(const GainMapMetadata& m) {
      << "<rdf:Description rdf:about=\"\""
      << " xmlns:hdrgm=\"http://ns.adobe.com/hdr-gain-map/1.0/\""
      << " hdrgm:Version=\"1.0\""
-     << " hdrgm:GainMapMin=\"" << fmt(m.minBoost[0]) << "\""
-     << " hdrgm:GainMapMax=\"" << fmt(m.maxBoost[0]) << "\""
-     << " hdrgm:Gamma=\"" << fmt(m.gamma[0]) << "\""
-     << " hdrgm:OffsetSDR=\"" << fmt(m.baseOffset[0]) << "\""
-     << " hdrgm:OffsetHDR=\"" << fmt(m.alternateOffset[0]) << "\""
+     << " hdrgm:GainMapMin=\"" << perChannel(m.minBoost, m.multiChannel) << "\""
+     << " hdrgm:GainMapMax=\"" << perChannel(m.maxBoost, m.multiChannel) << "\""
+     << " hdrgm:Gamma=\"" << perChannel(m.gamma, m.multiChannel) << "\""
+     << " hdrgm:OffsetSDR=\"" << perChannel(m.baseOffset, m.multiChannel) << "\""
+     << " hdrgm:OffsetHDR=\"" << perChannel(m.alternateOffset, m.multiChannel) << "\""
      << " hdrgm:HDRCapacityMin=\"" << fmt(m.baseHeadroom) << "\""
      << " hdrgm:HDRCapacityMax=\"" << fmt(m.alternateHeadroom) << "\""
      << " hdrgm:BaseRenditionIsHDR=\"False\"/>"

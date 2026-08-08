@@ -144,14 +144,15 @@ void decodesBothImagesOfAnExport() {
   CHECK_EQ(p.components, 3);
   Decoded g = decode(gain);
   CHECK(g.ok);
-  CHECK_EQ(g.width, 48u);
-  CHECK_EQ(g.components, 1);
+  CHECK_EQ(g.width, 96u);     // 1:1 by default
+  CHECK_EQ(g.components, 3);  // and RGB
 
   // The specular corner must be the brightest part of the gain map, and the
   // shadow region must sit near zero gain.
-  int corner = g.pixels[(static_cast<size_t>(g.height - 2) * g.width) +
-                        (g.width - 2)];
-  int shadow = g.pixels[static_cast<size_t>(2) * g.width + 2];
+  const int gc = g.components;
+  int corner = g.pixels[((static_cast<size_t>(g.height - 2) * g.width) +
+                         (g.width - 2)) * gc + 1];
+  int shadow = g.pixels[(static_cast<size_t>(2) * g.width + 2) * gc + 1];
   CHECK(corner > shadow + 40);
 
   // Whole-file decode: libjpeg reads the primary and ignores the trailer.
@@ -202,12 +203,19 @@ void reconstructedHdrMatchesTheSource() {
   for (uint32_t y = 0; y < base.height; ++y) {
     for (uint32_t x = 0; x < base.width; ++x) {
       const size_t i = static_cast<size_t>(y) * base.width + x;
-      // What a compliant decoder computes, per ISO 21496-1.
-      float g = gain.pixels[i] / 255.0f;
-      float gainLog2 = minBoost + (maxBoost - minBoost) *
-                                      std::pow(g, o.gainMapGamma);
+      // What a compliant decoder computes, per ISO 21496-1. The exponent is
+      // 1/gamma: the encoder stores pow(norm, gamma), so anything that decodes
+      // with pow(stored, gamma) is simply inverting our own encoder and would
+      // round-trip a wrong file perfectly. That is how a 1.26 EV midtone error
+      // shipped once.
       float recon[3];
       for (int c = 0; c < 3; ++c) {
+        // A multichannel map carries one gain per channel; a monochrome one
+        // carries a single gain that applies to all three.
+        const size_t gi = gain.components == 3 ? i * 3 + c : i;
+        float g = gain.pixels[gi] / 255.0f;
+        float gainLog2 = minBoost + (maxBoost - minBoost) *
+                                        std::pow(g, 1.0f / o.gainMapGamma);
         float sdrLinear = decodeSrgb(base.pixels[i * 3 + c] / 255.0f);
         recon[c] = (sdrLinear + o.offsetSdr) * std::exp2(gainLog2) - o.offsetHdr;
       }
@@ -254,7 +262,7 @@ void sdrShapingLeavesTheHdrRenditionAlone() {
   std::string in = std::string(ISO21496_TEST_TMPDIR) + "/shaping.tif";
   writeFile(in, makeTiff(spec, source));
 
-  auto renderHdrLuminance = [&](float lift, float contrast,
+  auto renderHdrLuminance = [&](SdrShapeMode mode, float lift, float contrast,
                                 double* midGreySdr) {
     EncoderOptions o;
     o.inputPath = in;
@@ -265,6 +273,11 @@ void sdrShapingLeavesTheHdrRenditionAlone() {
     o.gainMapSubsample = 1;
     o.quality = 98;
     o.gainMapQuality = 98;
+    // The curve path: this test is about the lift and contrast cancelling
+    // against the gain map. localToneMapLeavesTheHdrRenditionAlone covers the
+    // default operator, which has no lift or contrast to cancel.
+    o.toneMap = ToneMapOperator::Reinhard;
+    o.sdrShape = mode;
     o.sdrLiftEV = lift;
     o.sdrContrast = contrast;
     EncodeReport report;
@@ -281,12 +294,13 @@ void sdrShapingLeavesTheHdrRenditionAlone() {
     double sdrSum = 0;
     size_t sdrCount = 0;
     for (size_t i = 0; i < lum.size(); ++i) {
-      float g = gain.pixels[i] / 255.0f;
-      float gainLog2 = report.minBoostLog2 +
-                       (report.maxBoostLog2 - report.minBoostLog2) *
-                           std::pow(g, o.gainMapGamma);
       double y = 0, sdrY = 0;
       for (int c = 0; c < 3; ++c) {
+        const size_t gi = gain.components == 3 ? i * 3 + c : i;
+        float g = gain.pixels[gi] / 255.0f;
+        float gainLog2 = report.minBoostLog2 +
+                         (report.maxBoostLog2 - report.minBoostLog2) *
+                             std::pow(g, 1.0f / o.gainMapGamma);
         float sdrLinear = decodeSrgb(base.pixels[i * 3 + c] / 255.0f);
         sdrY += wgt[c] * sdrLinear;
         y += wgt[c] * std::max(0.0f, (sdrLinear + o.offsetSdr) *
@@ -304,37 +318,117 @@ void sdrShapingLeavesTheHdrRenditionAlone() {
     return lum;
   };
 
-  double plainMid = 0, shapedMid = 0;
-  auto plain = renderHdrLuminance(0.0f, 1.0f, &plainMid);
-  auto shaped = renderHdrLuminance(0.43f, 1.14f, &shapedMid);
-  CHECK_EQ(plain.size(), shaped.size());
+  double plainMid = 0;
+  auto plain = renderHdrLuminance(SdrShapeMode::Manual, 0.0f, 1.0f, &plainMid);
 
-  double sumEV = 0, maxEV = 0;
+  // Both ways of arriving at a shaped base have to leave the HDR rendition
+  // alone: the invariant is about the gain map being measured against the base
+  // as written, not about where the numbers came from.
+  struct Case {
+    const char* name;
+    SdrShapeMode mode;
+    float lift;
+    float contrast;
+  };
+  for (const Case& c : {Case{"manual", SdrShapeMode::Manual, 0.43f, 1.14f},
+                        Case{"solved", SdrShapeMode::Auto, 0.0f, 1.0f}}) {
+    double shapedMid = 0;
+    auto shaped = renderHdrLuminance(c.mode, c.lift, c.contrast, &shapedMid);
+    CHECK_EQ(plain.size(), shaped.size());
+
+    double sumEV = 0, maxEV = 0;
+    size_t n = 0;
+    for (size_t i = 0; i < plain.size(); ++i) {
+      if (plain[i] < 0.02 || shaped[i] < 0.02) continue;
+      double d = std::fabs(std::log2(shaped[i] / plain[i]));
+      sumEV += d;
+      maxEV = std::max(maxEV, d);
+      ++n;
+    }
+    CHECK(n > 1000);
+    const double meanEV = sumEV / n;
+    if (meanEV > 0.03)
+      reportFailure(__FILE__, __LINE__,
+                    std::string(c.name) + " shaping moved the HDR rendition by " +
+                        std::to_string(meanEV) + " EV on average");
+    if (maxEV > 0.15)
+      reportFailure(__FILE__, __LINE__,
+                    std::string(c.name) + " shaping moved one HDR pixel by " +
+                        std::to_string(maxEV) + " EV");
+
+    // ...while the SDR base itself does move, which is the entire point.
+    if (!(shapedMid > plainMid * 1.08))
+      reportFailure(__FILE__, __LINE__,
+                    std::string(c.name) +
+                        " shaping did not brighten the SDR base (" +
+                        std::to_string(plainMid) + " -> " +
+                        std::to_string(shapedMid) + ")");
+  }
+}
+
+// The local operator changes the base image far more than any curve does, so
+// the invariant that the HDR rendition survives it matters more here, not less.
+void localToneMapLeavesTheHdrRenditionAlone() {
+  TiffSpec spec;
+  spec.width = 192;
+  spec.height = 144;
+  spec.bitsPerSample = 32;
+  spec.floatSamples = true;
+  auto source = makeHdrPattern(spec.width, spec.height, 6.0f);
+  std::string in = std::string(ISO21496_TEST_TMPDIR) + "/localtm.tif";
+  writeFile(in, makeTiff(spec, source));
+
+  EncoderOptions o;
+  o.inputPath = in;
+  o.outputPath = std::string(ISO21496_TEST_TMPDIR) + "/localtm.jpg";
+  o.inputTransfer = TransferFunction::Linear;
+  o.inputPrimaries = ColorPrimaries::ProPhoto;
+  o.outputPrimaries = ColorPrimaries::DisplayP3;
+  o.gainMapSubsample = 1;
+  o.quality = 98;
+  o.gainMapQuality = 98;
+  EncodeReport report;
+  Bytes file = encodeToMemory(o, &report);
+
+  // The operator never brightens, so the gain map never has to darken.
+  CHECK_EQ(report.minBoostLog2, 0.0f);
+
+  Decoded base = decode(Bytes(file.begin(), file.begin() + report.primaryBytes));
+  Decoded gain = decode(Bytes(file.begin() + report.primaryBytes, file.end()));
+  CHECK(base.ok);
+  CHECK(gain.ok);
+
+  const Mat3 toOutput =
+      conversionMatrix(ColorPrimaries::ProPhoto, ColorPrimaries::DisplayP3);
+  double sumRel = 0;
   size_t n = 0;
-  for (size_t i = 0; i < plain.size(); ++i) {
-    if (plain[i] < 0.02 || shaped[i] < 0.02) continue;
-    double d = std::fabs(std::log2(shaped[i] / plain[i]));
-    sumEV += d;
-    maxEV = std::max(maxEV, d);
+  for (size_t i = 0; i < static_cast<size_t>(base.width) * base.height; ++i) {
+    double gotY = 0, wantY = 0;
+    const float* s = &source[i * 3];
+    auto want = toOutput.apply({s[0], s[1], s[2]});
+    const double wgt[3] = {0.2290, 0.6917, 0.0793};
+    for (int c = 0; c < 3; ++c) {
+      const size_t gi = gain.components == 3 ? i * 3 + c : i;
+      float g = gain.pixels[gi] / 255.0f;
+      float gainLog2 = report.minBoostLog2 +
+                       (report.maxBoostLog2 - report.minBoostLog2) *
+                           std::pow(g, 1.0f / o.gainMapGamma);
+      float sdrLinear = decodeSrgb(base.pixels[i * 3 + c] / 255.0f);
+      gotY += wgt[c] * std::max(0.0f, (sdrLinear + o.offsetSdr) *
+                                              std::exp2(gainLog2) -
+                                          o.offsetHdr);
+      wantY += wgt[c] * std::max(0.0, want[c]);
+    }
+    if (wantY < 0.02) continue;
+    sumRel += std::fabs(gotY - wantY) / wantY;
     ++n;
   }
   CHECK(n > 1000);
-  const double meanEV = sumEV / n;
-  if (meanEV > 0.03)
+  const double meanRel = sumRel / n;
+  if (meanRel > 0.10)
     reportFailure(__FILE__, __LINE__,
-                  "shaping moved the HDR rendition by " +
-                      std::to_string(meanEV) + " EV on average");
-  if (maxEV > 0.15)
-    reportFailure(__FILE__, __LINE__,
-                  "shaping moved one HDR pixel by " + std::to_string(maxEV) +
-                      " EV");
-
-  // ...while the SDR base itself does move, which is the entire point.
-  if (!(shapedMid > plainMid * 1.08))
-    reportFailure(__FILE__, __LINE__,
-                  "the lift did not brighten the SDR base (" +
-                      std::to_string(plainMid) + " -> " +
-                      std::to_string(shapedMid) + ")");
+                  "local tone mapping moved the HDR rendition by " +
+                      std::to_string(meanRel * 100.0) + "%");
 }
 
 void run() {
@@ -346,6 +440,7 @@ void run() {
   decodesBothImagesOfAnExport();
   reconstructedHdrMatchesTheSource();
   sdrShapingLeavesTheHdrRenditionAlone();
+  localToneMapLeavesTheHdrRenditionAlone();
 }
 
 }  // namespace

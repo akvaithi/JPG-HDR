@@ -42,8 +42,12 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
   po.offsetSdr = opt.offsetSdr;
   po.offsetHdr = opt.offsetHdr;
   po.toneMap = opt.toneMap;
+  po.sdrDetail = opt.sdrDetail;
+  po.sdrKnee = opt.sdrKnee;
+  po.sdrEdge = opt.sdrEdge;
   po.autoMaxBoost = opt.autoMaxBoost;
   po.peakDetect = opt.peakDetect;
+  po.sdrShape = opt.sdrShape;
   po.sdrLiftEV = opt.sdrLiftEV;
   po.sdrContrast = opt.sdrContrast;
   po.threads = opt.threads;
@@ -61,11 +65,15 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
 
   PipelineResult px = runPipeline(tiff, po);
   tiff.releaseFileData();
-  logf("tone mapped with %s (lift %.2f EV, contrast %.2f); headroom %.2f "
+  logf("tone mapped with %s (%s lift %.2f EV, contrast %.2f); headroom %.2f "
        "stops softened / %.2f true; gain map %.2f to %.2f EV",
-       toneMapName(opt.toneMap), opt.sdrLiftEV, opt.sdrContrast,
-       px.measuredHeadroom, px.truePeakHeadroom, px.minBoostLog2[0],
-       px.maxBoostLog2[0]);
+       toneMapName(opt.toneMap),
+       opt.toneMap == ToneMapOperator::Local
+           ? "local"
+           : (opt.sdrShape == SdrShapeMode::Auto ? "solved" : "manual"),
+       px.sdrLiftEV,
+       px.sdrContrast, px.measuredHeadroom, px.truePeakHeadroom,
+       px.minBoostLog2[0], px.maxBoostLog2[0]);
 
   GainMapMetadata meta;
   meta.multiChannel = opt.multiChannelGainMap;
@@ -95,6 +103,12 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
     jo.chromaSubsample = false;
     jo.optimizeHuffman = opt.optimizeHuffman;
     jo.threads = opt.threads;
+    // JFIF first. The ISO payload is what a decoder reads, but a gain map
+    // image that opens SOI + APP2 is not recognised as a JPEG by scanners that
+    // sniff the trailer for SOI followed by APP0/APP1/DQT — exiftool among
+    // them, which reported "Error reading GainMap image/jpeg from trailer" on
+    // every file this encoder wrote. Apple and Adobe both lead with APP0.
+    jo.appSegments.push_back(buildJfifAppSegment());
     jo.appSegments.push_back(buildIsoGainMapSegment(meta));
     if (opt.writeXmp)
       jo.appSegments.push_back(buildXmpAppSegment(buildGainMapXmp(meta)));
@@ -165,6 +179,13 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
     report->declaredHeadroom = meta.alternateHeadroom;
     report->measuredHeadroom = px.measuredHeadroom;
     report->truePeakHeadroom = px.truePeakHeadroom;
+    // Only true when the lift/contrast solver actually ran. Local tone mapping
+    // has nothing for it to solve, so reporting it there would be a lie.
+    report->autoShaped = opt.sdrShape == SdrShapeMode::Auto &&
+                         opt.toneMap != ToneMapOperator::Local;
+    report->sdrLiftEV = px.sdrLiftEV;
+    report->sdrContrast = px.sdrContrast;
+    report->midtoneAnchor = px.midtoneAnchor;
     report->inputPrimaries = primariesName(px.resolvedInputPrimaries);
     report->inputTransfer = transferName(px.resolvedInputTransfer);
     report->seconds =

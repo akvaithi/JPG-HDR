@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(iso21496_encoder VERSION 1.0.0 LANGUAGES CXX)
+project(iso21496_encoder VERSION 1.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,8 +36,12 @@ else()
 endif()
 
 # Static-link the toolchain runtimes so the binary the plugin ships has no
-# external dependencies on the photographer's machine.
+# external dependencies on the photographer's machine. Set globally rather than
+# per target: anything linking iso21496_core has to agree with it, and the test
+# executables silently did not.
 if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+      CACHE STRING "" FORCE)
   set_property(TARGET iso21496_core PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()

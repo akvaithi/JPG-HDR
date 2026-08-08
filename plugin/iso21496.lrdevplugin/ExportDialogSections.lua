@@ -8,6 +8,7 @@ else lives in a collapsed "Advanced" section so the common case stays simple.
 
 local LrView = import 'LrView'
 local LrColor = import 'LrColor'
+local LrTasks = import 'LrTasks'
 
 local IsoSettings = require 'IsoSettings'
 local IsoEncoder = require 'IsoEncoder'
@@ -27,8 +28,7 @@ function ExportDialogSections.mainSection(f, properties)
 		-- header goes stale when one of the others changes.
 		synopsis = bind {
 			keys = {
-				'iso_target_headroom', 'iso_color_space',
-				'iso_gainmap_subsample', 'iso_gainmap_channels',
+				'iso_target_headroom', 'iso_sdr_detail', 'iso_color_space',
 				'iso_jpeg_quality',
 			},
 			operation = function() return IsoSettings.summary(properties) end,
@@ -37,66 +37,35 @@ function ExportDialogSections.mainSection(f, properties)
 		f:row {
 			spacing = f:label_spacing(),
 			f:static_text {
-				title = LOC '$$$/Iso21496/HeadroomLabel=Target HDR headroom:',
+				title = LOC '$$$/Iso21496/HeadroomLabel=HDR headroom:',
 				alignment = 'right',
 				width = share 'iso_label_width',
 			},
 			f:popup_menu {
 				value = bind 'iso_target_headroom',
 				items = IsoSettings.headroomItems,
-				width_in_chars = 24,
+				width_in_chars = 28,
 			},
 		},
 		f:row {
 			spacing = f:label_spacing(),
 			f:static_text { title = '', width = share 'iso_label_width' },
 			f:static_text {
-				title = LOC '$$$/Iso21496/HeadroomHint=Peak brightness the gain map may reach on an HDR display. Files still look correct on SDR screens.',
+				title = LOC '$$$/Iso21496/HeadroomHint=Files declare the headroom the photo actually needs, which is the figure Lightroom shows for it. Cap it only to hold a set down deliberately.',
 				width_in_chars = 46,
-				height_in_lines = 2,
+				height_in_lines = 3,
 				text_color = LrColor(0.4, 0.4, 0.4),
 			},
 		},
 
 		f:row {
 			spacing = f:label_spacing(),
+			f:static_text { title = '', width = share 'iso_label_width' },
 			f:static_text {
-				title = LOC '$$$/Iso21496/ColorSpaceLabel=Base colour space:',
-				alignment = 'right',
-				width = share 'iso_label_width',
-			},
-			f:popup_menu {
-				value = bind 'iso_color_space',
-				items = IsoSettings.colorSpaceItems,
-				width_in_chars = 24,
-			},
-		},
-
-		f:row {
-			spacing = f:label_spacing(),
-			f:static_text {
-				title = LOC '$$$/Iso21496/SubsampleLabel=Gain map resolution:',
-				alignment = 'right',
-				width = share 'iso_label_width',
-			},
-			f:popup_menu {
-				value = bind 'iso_gainmap_subsample',
-				items = IsoSettings.subsampleItems,
-				width_in_chars = 24,
-			},
-		},
-
-		f:row {
-			spacing = f:label_spacing(),
-			f:static_text {
-				title = LOC '$$$/Iso21496/ChannelsLabel=Gain map channels:',
-				alignment = 'right',
-				width = share 'iso_label_width',
-			},
-			f:popup_menu {
-				value = bind 'iso_gainmap_channels',
-				items = IsoSettings.channelItems,
-				width_in_chars = 24,
+				title = LOC '$$$/Iso21496/ShapeHint=Brightness and contrast of the rendition seen without an HDR display, solved from each photo. The HDR result is unaffected either way.',
+				width_in_chars = 46,
+				height_in_lines = 3,
+				text_color = LrColor(0.4, 0.4, 0.4),
 			},
 		},
 
@@ -130,23 +99,38 @@ function ExportDialogSections.advancedSection(f, properties)
 	local bind = LrView.bind
 	local share = LrView.share
 
+	-- Asking the encoder its version means running it, which yields, and this
+	-- section is built on the main thread — doing it inline fails with
+	-- "Yielding is not allowed within a C or metamethod call" and Lightroom
+	-- refuses to draw the plug-in's part of the Export dialog. The key is
+	-- deliberately not an export preset field: it is display state, not a
+	-- setting, and must not be written into presets.
+	properties.iso_encoder_version = LOC '$$$/Iso21496/EncoderChecking=checking…'
+	LrTasks.startAsyncTask(function()
+		properties.iso_encoder_version = IsoEncoder.version()
+			or LOC '$$$/Iso21496/EncoderMissing=not found'
+	end)
+
 	return {
 		title = LOC '$$$/Iso21496/AdvancedTitle=ISO 21496-1 Advanced',
-		synopsis = LOC '$$$/Iso21496/AdvancedSynopsis=Tone mapping, gain map encoding, intermediate handling',
+		synopsis = LOC '$$$/Iso21496/AdvancedSynopsis=Colour space, base image look, intermediate handling',
 
 		f:row {
 			spacing = f:label_spacing(),
 			f:static_text {
-				title = LOC '$$$/Iso21496/ToneMapLabel=Tone mapping:',
+				title = LOC '$$$/Iso21496/ColorSpaceLabel=Base colour space:',
 				alignment = 'right',
 				width = share 'iso_adv_label_width',
 			},
 			f:popup_menu {
-				value = bind 'iso_tone_map',
-				items = IsoSettings.toneMapItems,
-				width_in_chars = 22,
+				value = bind 'iso_color_space',
+				items = IsoSettings.colorSpaceItems,
+				width_in_chars = 26,
 			},
 		},
+
+		f:separator { fill_horizontal = 1 },
+
 
 		f:row {
 			f:static_text {
@@ -156,7 +140,7 @@ function ExportDialogSections.advancedSection(f, properties)
 		},
 		f:row {
 			f:static_text {
-				title = LOC '$$$/Iso21496/SdrHint=Shapes only the fallback seen without an HDR display. The HDR rendition is unaffected — the gain map is measured against whatever base these produce.',
+				title = LOC '$$$/Iso21496/SdrHint=The rendition seen without full HDR headroom. Every display short of the file\'s own headroom shows a blend anchored on it, so this is not only the SDR fallback. The HDR rendition itself is unaffected.',
 				width_in_chars = 58,
 				height_in_lines = 2,
 				text_color = LrColor(0.4, 0.4, 0.4),
@@ -165,121 +149,41 @@ function ExportDialogSections.advancedSection(f, properties)
 		f:row {
 			spacing = f:label_spacing(),
 			f:static_text {
-				title = LOC '$$$/Iso21496/SdrLiftLabel=Brightness lift:',
+				title = LOC '$$$/Iso21496/DetailLabel=Depth:',
 				alignment = 'right',
 				width = share 'iso_adv_label_width',
 			},
 			f:slider {
-				value = bind 'iso_sdr_lift',
+				value = bind 'iso_sdr_detail',
 				min = 0,
-				max = 1.5,
+				max = 2,
 				width = 160,
+				enabled = automaticShaping,
 			},
 			f:edit_field {
-				value = bind 'iso_sdr_lift',
+				value = bind 'iso_sdr_detail',
 				min = 0,
-				max = 3,
-				precision = 2,
-				width_in_digits = 5,
-			},
-			f:static_text { title = LOC '$$$/Iso21496/EV=EV' },
-		},
-		f:row {
-			spacing = f:label_spacing(),
-			f:static_text {
-				title = LOC '$$$/Iso21496/SdrContrastLabel=Contrast:',
-				alignment = 'right',
-				width = share 'iso_adv_label_width',
-			},
-			f:slider {
-				value = bind 'iso_sdr_contrast',
-				min = 0.8,
-				max = 1.5,
-				width = 160,
-			},
-			f:edit_field {
-				value = bind 'iso_sdr_contrast',
-				min = 0.5,
 				max = 2,
 				precision = 2,
 				width_in_digits = 5,
+				enabled = automaticShaping,
 			},
-			f:push_button {
-				title = LOC '$$$/Iso21496/SdrNeutral=Neutral',
-				action = function()
-					properties.iso_sdr_lift = 0
-					properties.iso_sdr_contrast = 1.0
-				end,
+		},
+		f:row {
+			f:static_text { title = '', width = share 'iso_adv_label_width' },
+			f:static_text {
+				title = LOC '$$$/Iso21496/DetailHint=How much local contrast the base image keeps. 1.0 is what the render had; higher trades a flatter fallback for one that carries the separation an HDR display shows.',
+				width_in_chars = 58,
+				height_in_lines = 3,
+				text_color = LrColor(0.4, 0.4, 0.4),
 			},
 		},
 
 		f:separator { fill_horizontal = 1 },
 
-		f:row {
-			spacing = f:label_spacing(),
-			f:static_text {
-				title = LOC '$$$/Iso21496/PeakDetectLabel=Highlight measurement:',
-				alignment = 'right',
-				width = share 'iso_adv_label_width',
-			},
-			f:popup_menu {
-				value = bind 'iso_peak_detect',
-				items = IsoSettings.peakDetectItems,
-				width_in_chars = 26,
-			},
-		},
 
-		f:row {
-			spacing = f:label_spacing(),
-			f:static_text {
-				title = LOC '$$$/Iso21496/GainQualityLabel=Gain map quality:',
-				alignment = 'right',
-				width = share 'iso_adv_label_width',
-			},
-			f:slider {
-				value = bind 'iso_gainmap_quality',
-				min = 50,
-				max = 100,
-				integral = true,
-				width = 160,
-			},
-			f:edit_field {
-				value = bind 'iso_gainmap_quality',
-				min = 50,
-				max = 100,
-				precision = 0,
-				width_in_digits = 4,
-			},
-		},
 
-		f:row {
-			spacing = f:label_spacing(),
-			f:static_text {
-				title = LOC '$$$/Iso21496/GammaLabel=Gain map gamma:',
-				alignment = 'right',
-				width = share 'iso_adv_label_width',
-			},
-			f:popup_menu {
-				value = bind 'iso_gainmap_gamma',
-				items = IsoSettings.gammaItems,
-				width_in_chars = 14,
-			},
-		},
 
-		f:row {
-			f:static_text { title = '', width = share 'iso_adv_label_width' },
-			f:checkbox {
-				title = LOC '$$$/Iso21496/AutoMaxBoost=Fit the gain map range to the image',
-				value = bind 'iso_auto_max_boost',
-			},
-		},
-		f:row {
-			f:static_text { title = '', width = share 'iso_adv_label_width' },
-			f:checkbox {
-				title = LOC '$$$/Iso21496/ChromaSubsample=Chroma subsample the base image (4:2:0)',
-				value = bind 'iso_chroma_subsample',
-			},
-		},
 		f:row {
 			f:static_text { title = '', width = share 'iso_adv_label_width' },
 			f:checkbox {
@@ -357,8 +261,13 @@ function ExportDialogSections.advancedSection(f, properties)
 		f:row {
 			f:static_text { title = '', width = share 'iso_adv_label_width' },
 			f:static_text {
-				title = LOC('$$$/Iso21496/EncoderVersion=Bundled encoder: ^1',
-					IsoEncoder.version() or LOC '$$$/Iso21496/EncoderMissing=not found'),
+				title = bind {
+					key = 'iso_encoder_version',
+					transform = function(value)
+						return LOC('$$$/Iso21496/EncoderVersion=Bundled encoder: ^1',
+							tostring(value))
+					end,
+				},
 				text_color = LrColor(0.4, 0.4, 0.4),
 			},
 		},
