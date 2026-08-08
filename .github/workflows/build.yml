@@ -50,7 +50,8 @@ jobs:
       - name: Test natively (macOS)
         if: runner.os == 'macOS'
         run: |
-          cmake -S encoder -B encoder/build-native -DCMAKE_BUILD_TYPE=Release
+          cmake -S encoder -B encoder/build-native -DCMAKE_BUILD_TYPE=Release \
+            -DJPEG_ROOT="$(brew --prefix jpeg-turbo)"
           cmake --build encoder/build-native --parallel
           ctest --test-dir encoder/build-native --output-on-failure
 

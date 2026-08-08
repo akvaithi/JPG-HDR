@@ -21,8 +21,21 @@ endforeach()
 # CI job red. And Homebrew ships a single-architecture libjpeg, so a universal
 # build cannot link this test at all; the encoder itself has no such dependency,
 # which is the whole point of it being a build-time check.
-if(APPLE)
-  list(APPEND CMAKE_IGNORE_PATH /Library/Frameworks/Mono.framework/Headers)
+# CMAKE_IGNORE_PATH does not cover it: Mono's headers sit in a framework
+# directory, which find_path searches separately. Point find_package straight at
+# Homebrew's jpeg-turbo, which is the library it would link anyway.
+if(APPLE AND NOT DEFINED JPEG_ROOT)
+  find_program(ISO21496_BREW brew)
+  if(ISO21496_BREW)
+    execute_process(COMMAND ${ISO21496_BREW} --prefix jpeg-turbo
+                    OUTPUT_VARIABLE ISO21496_JPEG_PREFIX
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET RESULT_VARIABLE ISO21496_BREW_RC)
+    if(ISO21496_BREW_RC EQUAL 0 AND EXISTS "${ISO21496_JPEG_PREFIX}/include/jpeglib.h")
+      set(JPEG_ROOT "${ISO21496_JPEG_PREFIX}")
+      message(STATUS "using libjpeg from ${JPEG_ROOT}")
+    endif()
+  endif()
 endif()
 
 list(LENGTH CMAKE_OSX_ARCHITECTURES ISO21496_ARCH_COUNT)
