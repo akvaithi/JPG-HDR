@@ -80,9 +80,14 @@ void mpfPatching() {
   CHECK(id > 0);
   const size_t endian = id + 4;
   const size_t entries = id + 4 + 8 + (2 + 3 * 12 + 4);
-  CHECK_EQ(readU32BE(&file[entries]), 0x030000u);
+  // Attribute word: bit 29 is the Representative Image flag, the low 24 bits
+  // are the MP type code. A reader that trusts the index rather than parsing
+  // every trailing image has only these to go on, which is what the iOS share
+  // sheet and Android appear to do.
+  CHECK_EQ(readU32BE(&file[entries]), 0x20030000u);   // representative + primary
   CHECK_EQ(readU32BE(&file[entries + 4]), static_cast<uint32_t>(primarySize));
   CHECK_EQ(readU32BE(&file[entries + 8]), 0u);
+  CHECK_EQ(readU32BE(&file[entries + 16]), 0x00050000u);  // Gain Map Image
   CHECK_EQ(readU32BE(&file[entries + 16 + 4]),
            static_cast<uint32_t>(secondarySize));
   CHECK_EQ(readU32BE(&file[entries + 16 + 8]),
