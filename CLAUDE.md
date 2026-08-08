@@ -26,7 +26,23 @@ brew install jpeg-turbo exiftool lua                            # macOS
 ```
 
 * **`decode`** (needs libjpeg) — decodes our own bitstream and reconstructs the
-  HDR image from it. This is the only test that would catch a wrong gain map.
+  HDR image from it. This is the only test that would catch a wrong gain map, so
+  run it before believing anything about the gain map.
+
+  It does not run in two places, both for the same reason: a universal build
+  cannot link Homebrew's single-architecture libjpeg, so `./scripts/build.sh`
+  skips it on macOS, and the macOS CI runner has Mono installed, whose stale
+  `jpeglib.h` wins the header search regardless of `JPEG_ROOT`. **Run a native
+  build locally to exercise it**, which is where it caught the inverted gamma
+  convention:
+
+  ```bash
+  cmake -S encoder -B encoder/build-native -DCMAKE_BUILD_TYPE=Release
+  cmake --build encoder/build-native --parallel
+  ctest --test-dir encoder/build-native --output-on-failure
+  ```
+
+  CI covers it on Linux.
 * **`exiftool_compliance`** (needs exiftool) — the metadata audit from the
   build spec, run the way a reviewer would.
 
