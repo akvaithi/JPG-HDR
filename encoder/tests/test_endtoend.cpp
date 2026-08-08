@@ -1,4 +1,5 @@
 // Full pipeline: synthetic HDR TIFF in, ISO 21496-1 multi-picture JPEG out.
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <map>

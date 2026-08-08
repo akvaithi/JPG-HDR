@@ -36,8 +36,12 @@ else()
 endif()
 
 # Static-link the toolchain runtimes so the binary the plugin ships has no
-# external dependencies on the photographer's machine.
+# external dependencies on the photographer's machine. Set globally rather than
+# per target: anything linking iso21496_core has to agree with it, and the test
+# executables silently did not.
 if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+      CACHE STRING "" FORCE)
   set_property(TARGET iso21496_core PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()

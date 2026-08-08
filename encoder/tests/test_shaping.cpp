@@ -3,6 +3,7 @@
 // The point of solving rather than fixing these is that the right answer moves
 // with the picture, so most of what is worth asserting is how the answer
 // changes between distributions, not any single number.
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
