@@ -116,17 +116,25 @@ Bytes buildMpfSegmentPlaceholder() {
 
   putU32BE(p, 0);  // no next IFD
 
-  // Entry 0: the primary baseline image. Attribute 0x030000 marks it as the
-  // "Baseline MP Primary Image"; its offset is always zero.
-  putU32BE(p, 0x030000);
+  // Entry 0: the primary baseline image. The low 24 bits are the MP type code
+  // — 0x030000, "Baseline MP Primary Image" — and bit 29 is the Representative
+  // Image flag, which says this is the one to display. Lightroom sets it; not
+  // setting it leaves a reader to guess.
+  putU32BE(p, 0x20030000);
   putU32BE(p, 0);  // size, patched later
   putU32BE(p, 0);  // offset
   putU16BE(p, 0);
   putU16BE(p, 0);
 
-  // Entry 1: the gain map. Type "undefined" is what current gain-map writers
-  // use; decoders locate it through the ISO 21496-1 APP2 marker.
-  putU32BE(p, 0x000000);
+  // Entry 1: the gain map. Type code 0x050000 is "Gain Map Image".
+  //
+  // This was 0x000000, "Undefined", on the assumption that decoders locate the
+  // gain map through the ISO 21496-1 APP2 marker alone. Apple's do. Lightroom
+  // writes 0x050000, and a pipeline that reads the MPF index rather than
+  // parsing every trailing image — which is the cheap way to do it, and what
+  // Android and the iOS share sheet appear to do — has nothing to go on
+  // without it.
+  putU32BE(p, 0x00050000);
   putU32BE(p, 0);  // size, patched later
   putU32BE(p, 0);  // offset, patched later
   putU16BE(p, 0);
