@@ -108,11 +108,20 @@ jobs:
           name: iso21496_encoder-windows
           path: artifacts/windows
 
+      # upload-artifact strips the common prefix of whatever it matched, so the
+      # layout inside the artifact depends on which of the three paths existed.
+      # Find the binaries rather than assuming where they landed — the hardcoded
+      # paths here were wrong from the start and never noticed, because this job
+      # has never run with all three encoder jobs green.
       - name: Assemble the bundle
         run: |
-          ./scripts/package.sh \
-            --mac-binary artifacts/macos/bin/macOS/iso21496_encoder \
-            --windows-binary artifacts/windows/bin/windows/iso21496_encoder.exe
+          mac=$(find artifacts/macos -type f -name iso21496_encoder | head -1)
+          win=$(find artifacts/windows -type f -name 'iso21496_encoder.exe' | head -1)
+          test -n "$mac" || { echo "no macOS binary in the artifact:"; find artifacts/macos; exit 1; }
+          test -n "$win" || { echo "no Windows binary in the artifact:"; find artifacts/windows; exit 1; }
+          echo "macOS:   $mac"
+          echo "Windows: $win"
+          ./scripts/package.sh --mac-binary "$mac" --windows-binary "$win"
 
       - uses: actions/upload-artifact@v4
         with:
