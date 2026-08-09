@@ -203,26 +203,38 @@ def validate(path, r):
     if not r.check(mpf is not None, "the primary carries an MPF index"):
         return
     entries = mpf["entries"]
-    r.check(len(entries) == 2, "MPF declares exactly two images", f"declares {len(entries)}")
+    # Two images is the usual shape. Three is the one that survives an iMessage
+    # send: a three-channel gain map for the ISO and Ultra HDR readers, and a
+    # single channel one carrying Apple's apdi/HDRToneMap XMP, because Apple's
+    # pipeline handles only single channel maps end to end.
+    r.check(len(entries) in (2, 3), "MPF declares two or three images",
+            f"declares {len(entries)}")
 
-    if len(entries) == 2:
-        (a0, s0, o0), (a1, s1, o1) = entries
+    if len(entries) >= 2:
+        a0, s0, o0 = entries[0]
         r.check(a0 & 0xFFFFFF == MP_PRIMARY, "image 1 is the Baseline MP Primary Image",
                 f"type 0x{a0 & 0xFFFFFF:06X}")
         r.check(bool(a0 & MP_REPRESENTATIVE), "image 1 is flagged Representative",
                 "the flag that says which image to display")
-        r.check(a1 & 0xFFFFFF == MP_GAIN_MAP, "image 2 is typed Gain Map Image",
-                f"type 0x{a1 & 0xFFFFFF:06X}; 0x000000 (Undefined) leaves a reader "
-                f"that trusts the index with nothing to go on")
         r.check(s0 == primary_end, "the declared primary size matches the file",
                 f"declared {s0}, actual {primary_end}")
         r.check(o0 == 0, "the primary's offset is zero")
-        # MPF offsets are measured from the first byte of the MP Endian field.
-        want = primary_end - mpf["base"]
-        r.check(o1 == want, "the gain map's offset is measured from the MP Endian field",
-                f"declared {o1}, expected {want}")
-        r.check(s1 == len(data) - primary_end, "the declared gain map size matches",
-                f"declared {s1}, actual {len(data) - primary_end}")
+
+        # Each further image is a gain map, and its declared offset and size have
+        # to land exactly on it. Walking them in order is also how the size of
+        # the *first* gain map is known once there is more than one.
+        at = primary_end
+        for n, (an, sn, on) in enumerate(entries[1:], start=2):
+            r.check(an & 0xFFFFFF == MP_GAIN_MAP, f"image {n} is typed Gain Map Image",
+                    f"type 0x{an & 0xFFFFFF:06X}; 0x000000 (Undefined) leaves a reader "
+                    f"that trusts the index with nothing to go on")
+            # MPF offsets are measured from the first byte of the MP Endian field.
+            want = at - mpf["base"]
+            r.check(on == want, f"image {n}'s offset is measured from the MP Endian field",
+                    f"declared {on}, expected {want}")
+            at += sn
+        r.check(at == len(data), "the declared image sizes account for the whole file",
+                f"images end at {at}, file is {len(data)} bytes")
 
     # ------------------------------------------------------------- the gain map
     r.section("Gain map image", "iMessage, and anything scanning the trailer")
@@ -283,7 +295,10 @@ def validate(path, r):
         r.check("Semantic=\"Primary\"" in joined_p, "the directory names a Primary item")
         r.check("GainMap" in joined_p, "the directory names a GainMap item")
     if length is not None:
-        actual = len(data) - primary_end
+        # The GContainer length names the *first* gain map, which is not the
+        # rest of the file once a second one follows it for Apple.
+        actual = (mpf["entries"][1][1] if len(mpf["entries"]) >= 2
+                  else len(data) - primary_end)
         r.check(int(length) == actual,
                 "the declared length matches the gain map on disk",
                 f"declared {length}, actual {actual}; Android reads the gain map "
