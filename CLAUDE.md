@@ -209,6 +209,25 @@ test fails, suspect the change before the test.
   earlier version of that script missed this and concluded, wrongly, that HEIC
   could not carry a gain map at all.
 
+* **A three-channel gain map only fits in a JPEG, and only because we write
+  the JPEG ourselves.** Handed a `444f` map, ImageIO's writer segfaults inside
+  VideoToolbox (`vt_Copy_444v_Crop`) for HEIC *and* AVIF — it is the auxiliary
+  image path, not the container. Every Apple-container route is therefore
+  single channel, costing 0.23 EV in the highlights and 0.57 EV of hue drift
+  against the three-channel JPEG. Getting three channels into HEIF would mean
+  writing the container by hand and bringing our own HEVC or AV1 encoder, which
+  the no-dependency rule rules out.
+
+* **Apple has two gain map formats and they are not interchangeable.** ISO
+  21496-1 (`kCGImageAuxiliaryDataTypeISOGainMap`) is the interoperable one; the
+  older Apple format (`kCGImageAuxiliaryDataTypeHDRGainMap`,
+  `urn:com:apple:photo:2020:aux:hdrgainmap`) is what an iPhone's own photos
+  carry *alongside* it. In a JPEG the Apple form appears as an APP10 `AROT`
+  gain curve with no ISO payload at all; in a HEIC as an `XMP-HDRGainMap` block.
+  Reports of iMessage working hinge on the Apple form specifically, so a file
+  carrying only the ISO one is not evidence that Apple's stack will handle it
+  everywhere.
+
 * **Never combine "match the render" with `--no-auto-max-boost`.** With no cap
   to fall back on, the encoder would declare its 10-stop maximum as the photo's
   requirement, and invariant 2 does the rest. `IsoSettings.buildArguments`
