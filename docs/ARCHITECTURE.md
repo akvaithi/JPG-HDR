@@ -290,6 +290,30 @@ version fields, 34 bytes, no parameters. It says a gain map belongs to this
 image without a decoder having to walk MPF to the second one first. Lightroom
 and the Pixel camera both write it byte for byte.
 
+### Apple's description, and why it is the default
+
+`--apple-compatible` adds a second `rdf:Description` to the gain map image's XMP
+packet, in Apple's own namespaces: `apdi:AuxiliaryImageType` naming the 2020
+hdrgainmap URN, the stored pixel format, and an `HDRToneMap` block whose
+`ChannelMetadata` is a Seq. It exists because iMessage does not forward a gain
+map JPEG intact — it re-encodes, discards every ISO 21496-1 segment, and rebuilds
+the file from what it recognises, which is this block and nothing else. A file
+with perfect standard metadata and no Apple block arrives as a single flattened
+SDR image.
+
+Apple accepts only a genuinely single channel map, so the flag forces one rather
+than relabelling: a three channel map declaring `StoredFormat` as `L008` was sent
+and arrived flat. That is the whole cost — 0.25 EV in saturated highlights and
+0.61 EV of hue drift on roughly a tenth of a frame with warm speculars, with the
+SDR base, the declared headroom, the shadows and the midtones untouched.
+
+The plug-in turns it on by default, and pairs it with `--subsample 2`, because
+that combination is the one confirmed to render on iOS 26, iOS 27, Android and
+Google Photos from local storage, Google Photos after a cloud round trip, and
+through an iMessage send. The APP10 `AROT` curve that Apple's own files carry is
+*not* written: grafting it on changed nothing, and ImageIO emits a byte-identical
+blob whatever the image, so it carries no information about the picture.
+
 ## Memory and threading
 
 Peak memory on a 45 MP export is 678 MB, dominated by the intermediate TIFF

@@ -27,19 +27,21 @@ IsoSettings.defaults = {
 	-- more tonal separation in the base than a plain SDR export carries.
 	iso_sdr_detail = 1.25,
 
-	-- Whether the photo has to survive being sent over iMessage. That pipeline
-	-- re-encodes the file, discards every ISO 21496-1 segment and rebuilds it
-	-- from what it recognises, so a standards-only file arrives as a flat SDR
-	-- image no matter how correct it is. Adding Apple's own description of the
-	-- gain map fixes it — verified by sending both: 2.3001 EV and 9.5% of the
-	-- frame above SDR white on arrival, against 0.00 EV without.
+	-- The default, because it is the only configuration confirmed to render
+	-- everywhere it was taken: iOS 26, iOS 27, Android and Google Photos from
+	-- local storage, Google Photos after a cloud round trip, and — the one that
+	-- forced it — through an iMessage send, which re-encodes the file, discards
+	-- every ISO 21496-1 segment and rebuilds it from Apple's own description of
+	-- the gain map. Without that description the photo arrives as a single flat
+	-- SDR image however correct its standard metadata is.
 	--
-	-- It is a question rather than a default because it costs something real.
-	-- Apple only accepts a single channel gain map, so the per-channel highlight
-	-- correction goes: 0.25 EV in saturated highlights and 0.61 EV of hue drift,
-	-- on about a tenth of a frame with warm speculars. Everything else — the SDR
-	-- base, the headroom, shadows and midtones — is untouched.
-	iso_apple_compatible = false,
+	-- It costs the per-channel highlight correction, since Apple only accepts a
+	-- single channel gain map: 0.25 EV in saturated highlights and 0.61 EV of
+	-- hue drift, on about a tenth of a frame with warm speculars. The SDR base,
+	-- the headroom, the shadows and the midtones are all untouched. Turning it
+	-- off restores the three-channel map and gives a better picture everywhere
+	-- that is not iMessage.
+	iso_apple_compatible = true,
 
 	-- Declared as the *old* generation on purpose. Lightroom fills any preset
 	-- field a stored preset is missing with the value declared here, so
@@ -89,7 +91,7 @@ end
 -- deliberately picked monochrome after this version keeps it; someone who
 -- merely inherited it does not. Bump this whenever a default changes, and add
 -- the corresponding case below.
-IsoSettings.settingsVersion = 4
+IsoSettings.settingsVersion = 5
 
 local function migrateOldPreset(properties)
 	-- The gamma changed meaning, not just value: the encoder used to store
@@ -110,6 +112,14 @@ local function migrateOldPreset(properties)
 	if properties.iso_target_headroom == '4.0' then
 		properties.iso_target_headroom = 'match'
 	end
+	-- New in version 5, and on by default, so a preset written before it existed
+	-- has to be told rather than left with the field absent — Lightroom would
+	-- fill it from the declared default anyway, but only because that default is
+	-- deliberately the old generation. Being explicit here survives that changing.
+	if properties.iso_apple_compatible == nil then
+		properties.iso_apple_compatible = true
+	end
+
 	-- Settings that stopped being settings. Cleared rather than left in place so
 	-- a stale value cannot come back if one is ever reintroduced.
 	for _, key in ipairs { 'iso_gainmap_subsample', 'iso_gainmap_channels',
@@ -229,6 +239,13 @@ function IsoSettings.buildArguments(properties)
 
 	if p.iso_apple_compatible == true then
 		args[#args + 1] = '--apple-compatible'
+		-- Half resolution with it, which is the shape that was actually carried
+		-- through every platform and is what both an iPhone and a Pixel write —
+		-- the iPhone's map is 2856x2142 against a 5712x4284 primary. The encoder
+		-- leaves the flag orthogonal, so the pairing is made here rather than
+		-- buried in it, and it takes the file from about 10 MB to 8.5.
+		args[#args + 1] = '--subsample'
+		args[#args + 1] = '2'
 	end
 	if p.iso_copy_metadata == false then
 		args[#args + 1] = '--no-exif'
@@ -265,11 +282,12 @@ function IsoSettings.summary(properties)
 	local headroom = p.iso_target_headroom == 'match'
 		and LOC '$$$/Iso21496/SummaryMatch=headroom from the render'
 		or string.format('max +%s EV', tostring(p.iso_target_headroom))
-	-- Worth surfacing in the collapsed header: it is the one setting here that
-	-- changes the gain map itself rather than the base image.
+	-- Worth surfacing in the collapsed header, but the other way round now that
+	-- it is the default: the header should call out the file that will not
+	-- survive being messaged, not the one that will.
 	local shareable = p.iso_apple_compatible == true
-		and LOC '$$$/Iso21496/SummaryApple= / iMessage-safe'
-		or ''
+		and ''
+		or LOC '$$$/Iso21496/SummaryMaxQuality= / max quality, not iMessage-safe'
 	return string.format('%s / depth %.2f / %s / q%d%s', headroom,
 		clampNumber(p.iso_sdr_detail, 0, 2, 1.25),
 		tostring(p.iso_color_space),

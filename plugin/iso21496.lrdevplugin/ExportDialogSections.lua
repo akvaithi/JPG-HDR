@@ -184,14 +184,14 @@ function ExportDialogSections.advancedSection(f, properties)
 		f:row {
 			f:static_text { title = '', width = share 'iso_adv_label_width' },
 			f:checkbox {
-				title = LOC '$$$/Iso21496/AppleCompatible=Survive being sent over iMessage',
+				title = LOC '$$$/Iso21496/AppleCompatible=Share anywhere, including iMessage',
 				value = bind 'iso_apple_compatible',
 			},
 		},
 		f:row {
 			f:static_text { title = '', width = share 'iso_adv_label_width' },
 			f:static_text {
-				title = LOC '$$$/Iso21496/AppleHint=iMessage rebuilds the photo from the parts it recognises, so a standards-only file arrives flat however correct it is. This adds Apple\'s own description of the gain map. It costs the per-channel highlight correction — saturated highlights drift about 0.25 EV toward neutral — and nothing else.',
+				title = LOC '$$$/Iso21496/AppleHint=Confirmed on iOS, Android, Google Photos and through an iMessage send, which rebuilds the photo from the parts Apple recognises and would otherwise deliver it flat. Turn it off for a slightly better picture — saturated highlights hold about 0.25 EV more colour — on a file that will not survive being messaged.',
 				width_in_chars = 58,
 				height_in_lines = 4,
 				text_color = LrColor(0.4, 0.4, 0.4),

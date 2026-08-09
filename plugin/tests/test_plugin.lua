@@ -95,19 +95,28 @@ local function testArguments()
 
 	-- Everything with one measured right answer is the encoder's default now.
 	-- Passing it from here would let a preset put a worse value back.
-	for _, flag in ipairs { '--subsample', '--channels', '--gainmap%-quality',
+	-- --subsample is no longer on this list: it travels with --apple-compatible,
+	-- which pairs the metadata with the half resolution map that was carried
+	-- through every platform rather than leaving the two to drift apart.
+	for _, flag in ipairs { '--channels', '--gainmap%-quality',
 	                       '--gamma', '--peak%-detect', '--no%-chroma%-subsample',
 	                       '--no%-auto%-max%-boost', '--sdr%-lift', '--sdr%-contrast' } do
 		check(not args:find(flag), 'the plug-in does not pass ' .. flag:gsub('%%', ''))
 	end
 
-	-- iMessage compatibility is off unless asked for: it costs the per-channel
-	-- gain map, so it must never arrive by default.
-	check(not args:find('--apple%-compatible'), 'iMessage compatibility is opt in')
-	local shareable = join(IsoSettings.buildArguments { iso_apple_compatible = true })
-	check(shareable:find('--apple%-compatible'), 'the checkbox reaches the encoder')
-	check(IsoSettings.summary({ iso_apple_compatible = true }):find('iMessage'),
-		'the collapsed header says the gain map changed')
+	-- Shareable is the default: it is the only shape confirmed to render on iOS,
+	-- Android, Google Photos and through an iMessage send, and it ships at half
+	-- resolution because that is the configuration that was actually carried
+	-- through all of them.
+	check(args:find('--apple%-compatible'), 'the default file is the shareable one')
+	check(args:find('--subsample 2'), 'the shareable file is half resolution')
+	local maxQuality = join(IsoSettings.buildArguments { iso_apple_compatible = false })
+	check(not maxQuality:find('--apple%-compatible'), 'the checkbox turns it off')
+	check(not maxQuality:find('--subsample'), 'turning it off restores full resolution')
+	check(IsoSettings.summary({ iso_apple_compatible = false }):find('not iMessage'),
+		'the collapsed header calls out the file that will not survive messaging')
+	check(not IsoSettings.summary({}):find('not iMessage'),
+		'and says nothing when the default is in force')
 
 	-- The depth amount is clamped to what the encoder accepts.
 	local deep = join(IsoSettings.buildArguments { iso_sdr_detail = 99 })
@@ -305,7 +314,12 @@ local function testRealEncode(fixtureTiff)
 	checkEqual(report.sdrContrast, 1, 'local tone mapping applies no contrast')
 	checkEqual(report.minBoostLog2, 0, 'the local operator never needs a negative gain')
 
-	checkEqual(report.gainChannels, 3, 'the encoder defaults to a three-channel gain map')
+	-- One channel, because the plug-in's default is the shareable file and
+	-- Apple's pipeline accepts nothing else. The encoder on its own still
+	-- defaults to three; this is the plug-in's choice, made because a file that
+	-- arrives flat over iMessage is worse than one 0.25 EV short in saturated
+	-- highlights. Unchecking the box gets the three-channel map back.
+	checkEqual(report.gainChannels, 1, 'the plug-in default is a single-channel gain map')
 	check(report.totalBytes > 0, 'report says bytes were written')
 
 	-- The file must declare the headroom it needs, not the 4 EV ceiling the
