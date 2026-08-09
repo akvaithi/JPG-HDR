@@ -104,19 +104,15 @@ local function testArguments()
 		check(not args:find(flag), 'the plug-in does not pass ' .. flag:gsub('%%', ''))
 	end
 
-	-- Shareable is the default: it is the only shape confirmed to render on iOS,
-	-- Android, Google Photos and through an iMessage send, and it ships at half
-	-- resolution because that is the configuration that was actually carried
-	-- through all of them.
-	check(args:find('--apple%-compatible'), 'the default file is the shareable one')
-	check(args:find('--subsample 2'), 'the shareable file is half resolution')
-	local maxQuality = join(IsoSettings.buildArguments { iso_apple_compatible = false })
-	check(not maxQuality:find('--apple%-compatible'), 'the checkbox turns it off')
-	check(not maxQuality:find('--subsample'), 'turning it off restores full resolution')
-	check(IsoSettings.summary({ iso_apple_compatible = false }):find('not iMessage'),
-		'the collapsed header calls out the file that will not survive messaging')
-	check(not IsoSettings.summary({}):find('not iMessage'),
-		'and says nothing when the default is in force')
+	-- Not a setting any more: this is the only shape confirmed to render on iOS,
+	-- Android and Google Photos and to survive an iMessage send, so no preset may
+	-- turn it off. Passing iso_apple_compatible = false must change nothing.
+	check(args:find('--apple%-compatible'), 'every export carries Apple\'s description')
+	check(args:find('--subsample 2'), 'and a half resolution gain map')
+	local forced = join(IsoSettings.buildArguments { iso_apple_compatible = false })
+	check(forced:find('--apple%-compatible'),
+		'a stored preset cannot turn iMessage compatibility off')
+	check(forced:find('--subsample 2'), 'nor the half resolution map')
 
 	-- The depth amount is clamped to what the encoder accepts.
 	local deep = join(IsoSettings.buildArguments { iso_sdr_detail = 99 })
@@ -161,6 +157,14 @@ local function testPresetMigration()
 	checkEqual(old.iso_gainmap_channels, nil,
 		'a stale gain map channel setting is cleared, not honoured')
 	checkEqual(old.iso_gainmap_gamma, nil, 'a stale gamma is cleared')
+	-- Was a checkbox in version 5. A preset holding it false would otherwise keep
+	-- producing files that arrive flat over iMessage.
+	local wasOff = IsoSettings.applyDefaults {
+		iso_target_headroom = 'match', iso_apple_compatible = false,
+		iso_settings_version = 5,
+	}
+	checkEqual(wasOff.iso_apple_compatible, nil,
+		'a preset that turned off iMessage compatibility is cleared')
 	checkEqual(old.iso_target_headroom, 'match', 'a stale +4 EV cap migrates to matching the render')
 	checkEqual(old.iso_settings_version, IsoSettings.settingsVersion,
 		'the preset is stamped with the current generation')

@@ -27,22 +27,6 @@ IsoSettings.defaults = {
 	-- more tonal separation in the base than a plain SDR export carries.
 	iso_sdr_detail = 1.25,
 
-	-- The default, because it is the only configuration confirmed to render
-	-- everywhere it was taken: iOS 26, iOS 27, Android and Google Photos from
-	-- local storage, Google Photos after a cloud round trip, and — the one that
-	-- forced it — through an iMessage send, which re-encodes the file, discards
-	-- every ISO 21496-1 segment and rebuilds it from Apple's own description of
-	-- the gain map. Without that description the photo arrives as a single flat
-	-- SDR image however correct its standard metadata is.
-	--
-	-- It costs the per-channel highlight correction, since Apple only accepts a
-	-- single channel gain map: 0.25 EV in saturated highlights and 0.61 EV of
-	-- hue drift, on about a tenth of a frame with warm speculars. The SDR base,
-	-- the headroom, the shadows and the midtones are all untouched. Turning it
-	-- off restores the three-channel map and gives a better picture everywhere
-	-- that is not iMessage.
-	iso_apple_compatible = true,
-
 	-- Declared as the *old* generation on purpose. Lightroom fills any preset
 	-- field a stored preset is missing with the value declared here, so
 	-- declaring the current generation would stamp every old preset as current
@@ -56,6 +40,15 @@ IsoSettings.defaults = {
 	-- are the encoder's defaults rather than questions put to a photographer.
 	-- Monochrome in particular was not a trade-off but a trap: it left
 	-- highlights 0.63 EV duller because one gain cannot follow three channels.
+	--
+	-- iMessage compatibility joined them. Every export now carries Apple's own
+	-- description of the gain map alongside the standard one, and a half
+	-- resolution single channel map, because that combination is the only one
+	-- confirmed to render on iOS 26 and 27, on Android and Google Photos both
+	-- locally and after a cloud round trip, and to survive an iMessage send —
+	-- which the alternative does not, arriving as a flat SDR image. It was a
+	-- checkbox for as long as it took to establish that turning it off produces
+	-- a file that silently loses its HDR in transit.
 
 
 	-- How to read what Lightroom rendered.
@@ -91,7 +84,7 @@ end
 -- deliberately picked monochrome after this version keeps it; someone who
 -- merely inherited it does not. Bump this whenever a default changes, and add
 -- the corresponding case below.
-IsoSettings.settingsVersion = 5
+IsoSettings.settingsVersion = 6
 
 local function migrateOldPreset(properties)
 	-- The gamma changed meaning, not just value: the encoder used to store
@@ -112,21 +105,17 @@ local function migrateOldPreset(properties)
 	if properties.iso_target_headroom == '4.0' then
 		properties.iso_target_headroom = 'match'
 	end
-	-- New in version 5, and on by default, so a preset written before it existed
-	-- has to be told rather than left with the field absent — Lightroom would
-	-- fill it from the declared default anyway, but only because that default is
-	-- deliberately the old generation. Being explicit here survives that changing.
-	if properties.iso_apple_compatible == nil then
-		properties.iso_apple_compatible = true
-	end
-
 	-- Settings that stopped being settings. Cleared rather than left in place so
 	-- a stale value cannot come back if one is ever reintroduced.
 	for _, key in ipairs { 'iso_gainmap_subsample', 'iso_gainmap_channels',
 	                       'iso_gainmap_quality', 'iso_gainmap_gamma',
 	                       'iso_chroma_subsample', 'iso_peak_detect',
 	                       'iso_auto_max_boost', 'iso_sdr_shape', 'iso_tone_map',
-	                       'iso_sdr_lift', 'iso_sdr_contrast' } do
+	                       'iso_sdr_lift', 'iso_sdr_contrast',
+	                       -- Was a checkbox in version 5. A preset that turned it
+	                       -- off would otherwise keep producing files that arrive
+	                       -- flat over iMessage, silently and forever.
+	                       'iso_apple_compatible' } do
 		properties[key] = nil
 	end
 end
@@ -237,16 +226,14 @@ function IsoSettings.buildArguments(properties)
 	args[#args + 1] = '--sdr-detail'
 	args[#args + 1] = string.format('%.2f', clampNumber(p.iso_sdr_detail, 0, 2, 1.25))
 
-	if p.iso_apple_compatible == true then
-		args[#args + 1] = '--apple-compatible'
-		-- Half resolution with it, which is the shape that was actually carried
-		-- through every platform and is what both an iPhone and a Pixel write —
-		-- the iPhone's map is 2856x2142 against a 5712x4284 primary. The encoder
-		-- leaves the flag orthogonal, so the pairing is made here rather than
-		-- buried in it, and it takes the file from about 10 MB to 8.5.
-		args[#args + 1] = '--subsample'
-		args[#args + 1] = '2'
-	end
+	-- Always. Apple's description of the gain map is what survives an iMessage
+	-- send, and half resolution is the shape that was carried through every
+	-- platform tested — it is also what both an iPhone and a Pixel write, the
+	-- iPhone's map being 2856x2142 against a 5712x4284 primary. The encoder
+	-- keeps the two flags orthogonal, so the pairing is made here.
+	args[#args + 1] = '--apple-compatible'
+	args[#args + 1] = '--subsample'
+	args[#args + 1] = '2'
 	if p.iso_copy_metadata == false then
 		args[#args + 1] = '--no-exif'
 	end
@@ -282,17 +269,10 @@ function IsoSettings.summary(properties)
 	local headroom = p.iso_target_headroom == 'match'
 		and LOC '$$$/Iso21496/SummaryMatch=headroom from the render'
 		or string.format('max +%s EV', tostring(p.iso_target_headroom))
-	-- Worth surfacing in the collapsed header, but the other way round now that
-	-- it is the default: the header should call out the file that will not
-	-- survive being messaged, not the one that will.
-	local shareable = p.iso_apple_compatible == true
-		and ''
-		or LOC '$$$/Iso21496/SummaryMaxQuality= / max quality, not iMessage-safe'
-	return string.format('%s / depth %.2f / %s / q%d%s', headroom,
+	return string.format('%s / depth %.2f / %s / q%d', headroom,
 		clampNumber(p.iso_sdr_detail, 0, 2, 1.25),
 		tostring(p.iso_color_space),
-		math.floor(tonumber(p.iso_jpeg_quality) or 90),
-		shareable)
+		math.floor(tonumber(p.iso_jpeg_quality) or 90))
 end
 
 return IsoSettings

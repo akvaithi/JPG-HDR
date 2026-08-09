@@ -29,7 +29,7 @@ function ExportDialogSections.mainSection(f, properties)
 		synopsis = bind {
 			keys = {
 				'iso_target_headroom', 'iso_sdr_detail', 'iso_color_space',
-				'iso_jpeg_quality', 'iso_apple_compatible',
+				'iso_jpeg_quality',
 			},
 			operation = function() return IsoSettings.summary(properties) end,
 		},
@@ -181,24 +181,7 @@ function ExportDialogSections.advancedSection(f, properties)
 
 		f:separator { fill_horizontal = 1 },
 
-		f:row {
-			f:static_text { title = '', width = share 'iso_adv_label_width' },
-			f:checkbox {
-				title = LOC '$$$/Iso21496/AppleCompatible=Share anywhere, including iMessage',
-				value = bind 'iso_apple_compatible',
-			},
-		},
-		f:row {
-			f:static_text { title = '', width = share 'iso_adv_label_width' },
-			f:static_text {
-				title = LOC '$$$/Iso21496/AppleHint=Confirmed on iOS, Android, Google Photos and through an iMessage send, which rebuilds the photo from the parts Apple recognises and would otherwise deliver it flat. Turn it off for a slightly better picture — saturated highlights hold about 0.25 EV more colour — on a file that will not survive being messaged.',
-				width_in_chars = 58,
-				height_in_lines = 4,
-				text_color = LrColor(0.4, 0.4, 0.4),
-			},
-		},
 
-		f:separator { fill_horizontal = 1 },
 
 		f:row {
 			f:static_text { title = '', width = share 'iso_adv_label_width' },
