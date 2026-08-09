@@ -469,6 +469,39 @@ float highlightScaleForTest(const float rgb[3], float scale, float knee) {
   return highlightScale(rgb, scale, knee);
 }
 
+// Where the highlight shoulder starts for one pixel, given how bright that
+// pixel's surroundings are.
+//
+// A single global knee cannot serve a frame that contains both a white garment
+// under even light and a small specular on a dark ground. Rated across sixteen
+// scenes, the preferred global knee could not be predicted from any measurement
+// of the whole frame — two scenes with median luminances of 0.642 and 0.666 were
+// rated at opposite ends of the ladder — and the rating that explained why
+// refused to give a number at all: parts of one rendering better and parts of
+// another better, within a single picture.
+//
+// So take the knee from the guided filter's base layer, which is exactly the
+// "how bright is it around here" signal that distinguishes the two. `b` is the
+// base layer's log2 luminance: a white garment has a high b and little detail
+// riding on it, a specular has a low b and a large one. Where b is high the
+// shoulder starts earlier and the area rolls off; where it is low the pixel
+// keeps the punch a global knee would also have given it.
+//
+// strength 0 is exactly the global behaviour, which is what ships until this is
+// shown to beat it on frames it has not seen.
+float localShoulderKneeLog(float b, float globalKneeLog, float strength) {
+  if (strength <= 0.0f) return globalKneeLog;
+  // Ramp over the stop and a half below SDR white: below that the surroundings
+  // are dim enough that nothing here is a large bright area.
+  const float t = clampf((b + 1.5f) / 1.3f, 0.0f, 1.0f);
+  // A full stop earlier at the top of the ramp, scaled by strength.
+  return globalKneeLog - strength * t * 1.0f;
+}
+
+float localShoulderKneeLogForTest(float b, float globalKneeLog, float strength) {
+  return localShoulderKneeLog(b, globalKneeLog, strength);
+}
+
 SdrShaping solveSdrShaping(const float* luminances, size_t count,
                            const PipelineOptions& opts, float maxBoost) {
   std::vector<uint64_t> hist(kHistBins, 0);
@@ -891,6 +924,10 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
         // local operator produces a scale the same way — one number for all
         // three channels — so it inherits that property unchanged.
         float scale;
+        // The knee this pixel's own surroundings ask for. Only the local
+        // operator has a base layer to read it from; the curve modes keep the
+        // global one.
+        float pixelKnee = opts.sdrHighlightKnee;
         if (localToneMap && baseLog.w > 0) {
           // Bilinear sample of the base layer at this pixel. Guide sample gx
           // covers source columns [gx*block, (gx+1)*block), so its centre sits
@@ -933,7 +970,10 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
           // than Lightroom's own export of the same render, and the opposite of
           // why this base is worth having. The composite only ever overshoots
           // by what the detail layer adds, so two stops is the whole budget.
-          logS = compressBase(logS, highlightKneeLog, highlightKneeLog + 2.0f);
+          const float kneeLog = localShoulderKneeLog(b, highlightKneeLog,
+                                                     opts.sdrLocalShoulder);
+          logS = compressBase(logS, kneeLog, kneeLog + 2.0f);
+          pixelKnee = std::exp2(kneeLog);
           // Back to a ratio. Expressed as scale rather than an absolute value
           // so the chromaticity argument above still holds.
           scale = lHdr > 1e-8f ? std::exp2(logS) / lHdr : 0.0f;
@@ -942,7 +982,7 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
           scale = shaper.rgbScale(lHdr);
         }
 
-        scale = highlightScale(hdr, scale, opts.sdrHighlightKnee);
+        scale = highlightScale(hdr, scale, pixelKnee);
 
         float sdr[3];
         for (int c = 0; c < 3; ++c)

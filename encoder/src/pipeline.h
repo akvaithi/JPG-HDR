@@ -79,6 +79,11 @@ struct PipelineOptions {
   // frames. A shoulder driven by the local base layer could act on that; one
   // number chosen per image cannot, however it is chosen.
   float sdrHighlightKnee = 0.80f;
+  // How much the highlight shoulder follows the local base layer rather than a
+  // single threshold for the whole frame. 0 is the global behaviour and is the
+  // default; 1 starts the shoulder a full stop earlier where the surroundings
+  // are already near white.
+  float sdrLocalShoulder = 0.0f;
   // Guided-filter edge threshold, in stops squared. Larger smooths through more
   // texture, leaving more of it in the detail layer to be handed back.
   float sdrEdge = 4.0f;
@@ -147,6 +152,9 @@ float compressBaseForTest(float b, float kneeStart, float maxLog);
 // cannot move the channels relative to each other — without depending on a
 // rendered frame happening to contain a saturated highlight.
 float highlightScaleForTest(const float rgb[3], float scale, float knee);
+// The per-pixel knee the local shoulder produces from the base layer's log2
+// luminance. Exposed so its shape can be asserted directly.
+float localShoulderKneeLogForTest(float b, float globalKneeLog, float strength);
 float clampf(float v, float lo, float hi);
 
 }  // namespace iso21496

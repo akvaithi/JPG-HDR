@@ -238,8 +238,50 @@ void theHighlightShoulderIsAUniformScale() {
   CHECK_NEAR(highlightScaleForTest(hot, 1.0f, 1.0f), 1.0f, 1e-6);
 }
 
+// The local shoulder takes its knee from the base layer, so a large bright
+// area rolls off where a specular on a dark ground does not.
+//
+// Asserted on the mapping rather than on a rendered frame, because a rendered
+// frame is exactly where this kind of test goes quiet: an earlier attempt to
+// check the hue property through a synthetic pattern passed with the broken
+// implementation still in place.
+void theLocalShoulderFollowsTheBaseLayer() {
+  const float global = std::log2(0.80f);
+
+  // Off is the shipped behaviour, and must be the global knee exactly — not
+  // approximately, since that is what keeps every existing export identical.
+  for (float b : {-6.0f, -1.5f, -0.5f, 0.0f, 2.0f})
+    CHECK_EQ(localShoulderKneeLogForTest(b, global, 0.0f), global);
+
+  // Dim surroundings: a specular sitting on a dark ground keeps the global
+  // knee, which is the whole point of doing this locally.
+  CHECK_EQ(localShoulderKneeLogForTest(-3.0f, global, 1.0f), global);
+  CHECK_EQ(localShoulderKneeLogForTest(-1.5f, global, 1.0f), global);
+
+  // Bright surroundings: the shoulder starts earlier, by a full stop at the
+  // top of the ramp.
+  CHECK_NEAR(localShoulderKneeLogForTest(-0.2f, global, 1.0f), global - 1.0f, 1e-5);
+  CHECK_NEAR(localShoulderKneeLogForTest(1.0f, global, 1.0f), global - 1.0f, 1e-5);
+
+  // Monotonic in between, and never above the global knee: this may pull the
+  // shoulder earlier, never later.
+  float previous = global + 1.0f;
+  for (int i = 0; i <= 100; ++i) {
+    const float b = -2.0f + 3.0f * (i / 100.0f);
+    const float k = localShoulderKneeLogForTest(b, global, 1.0f);
+    CHECK(k <= global + 1e-6f);
+    CHECK(k <= previous + 1e-6f);
+    previous = k;
+  }
+
+  // Strength scales the effect rather than switching it on: half the strength
+  // is half the shift, so a sweep over it is a sweep over something continuous.
+  CHECK_NEAR(localShoulderKneeLogForTest(0.0f, global, 0.5f), global - 0.5f, 1e-5);
+}
+
 void run() {
   localOperatorCompressesWithoutBrightening();
+  theLocalShoulderFollowsTheBaseLayer();
   theHighlightShoulderIsAUniformScale();
   liftTracksSceneBrightness();
   theMedianLandsWhereItStarted();
