@@ -263,7 +263,10 @@ local function testDialogsBuildOutsideATask()
 		properties.iso_encoder_version:match('^%d+%.%d+%.%d+$') ~= nil,
 		'the export dialog resolves the encoder version from a task ('
 			.. tostring(properties.iso_encoder_version) .. ')')
-	check(infoTable.isoStatus ~= nil and infoTable.isoStatus:find('1%.') ~= nil,
+	-- Match a version rather than a particular one: pinning the major number
+	-- here made a release bump look like a broken Plug-in Manager.
+	check(infoTable.isoStatus ~= nil and
+		infoTable.isoStatus:find('%d+%.%d+%.%d+') ~= nil,
 		'the Plug-in Manager resolves the encoder status from a task ('
 			.. tostring(infoTable.isoStatus) .. ')')
 

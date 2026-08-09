@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Assembles the distributable plug-in bundle in dist/.
 #
-#   scripts/package.sh [--mac-binary PATH] [--windows-binary PATH]
+#   scripts/package.sh [--mac-binary PATH] [--windows-binary PATH] [--with-heic]
 #
 # Both platform binaries have to be built before packaging: Lightroom Classic
 # plug-ins are cross-platform bundles, and a photographer on Windows must get
@@ -14,12 +14,17 @@ dist="$repo_root/dist"
 mac_binary=""
 win_binary=""
 allow_missing=0
+# The HEIC repackager is opt in. It is macOS only, so shipping it by default
+# would put a binary in the bundle that most of the plug-in cannot use, and the
+# export dialog does not offer it yet.
+with_heic=0
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--mac-binary) mac_binary="$2"; shift 2 ;;
 		--windows-binary) win_binary="$2"; shift 2 ;;
 		--allow-missing) allow_missing=1; shift ;;
+		--with-heic) with_heic=1; shift ;;
 		*) echo "unknown option: $1" >&2; exit 2 ;;
 	esac
 done
@@ -30,12 +35,16 @@ cp -R "$bundle_src" "$dist/"
 bundle="$dist/iso21496.lrdevplugin"
 
 [ -n "$mac_binary" ] && install -m 0755 "$mac_binary" "$bundle/bin/macOS/iso21496_encoder"
-# The HEIC repackager, which sits beside the encoder in the same build tree.
-# macOS only and optional: the plug-in offers the HEIC export only when this is
-# present, so a bundle built without it — every Windows one — still works.
-if [ -n "$mac_binary" ] && [ -x "$(dirname "$mac_binary")/iso21496_heic" ]; then
+# The HEIC repackager, opt in with --with-heic. It sits beside the encoder in
+# the same build tree. Nothing in the plug-in calls it yet, so a bundle without
+# it behaves identically; this exists so that shipping it is a decision rather
+# than a side effect of having built it.
+if [ "$with_heic" = 1 ] && [ -n "$mac_binary" ] &&
+   [ -x "$(dirname "$mac_binary")/iso21496_heic" ]; then
 	install -m 0755 "$(dirname "$mac_binary")/iso21496_heic" \
 		"$bundle/bin/macOS/iso21496_heic"
+else
+	rm -f "$bundle/bin/macOS/iso21496_heic"
 fi
 [ -n "$win_binary" ] && install -m 0755 "$win_binary" "$bundle/bin/windows/iso21496_encoder.exe"
 

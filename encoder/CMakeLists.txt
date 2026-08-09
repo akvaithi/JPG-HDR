@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(iso21496_encoder VERSION 1.1.0 LANGUAGES CXX)
+project(iso21496_encoder VERSION 2.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
