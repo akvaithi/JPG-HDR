@@ -62,14 +62,25 @@ struct EncoderOptions {
   // Where the shoulder on the composite SDR value starts. 1.0 disables it and
   // restores the hard clip.
   //
-  // Chosen by preference rather than by metric, and the two disagreed. Swept
-  // from 0.95 to 0.35 across six frames against Lightroom's own export, the
-  // picks came back 0.725, 0.80, 0.80, 0.95, 0.95, 0.95 — every one of them at
-  // or above 0.75, which is where a clipping metric had put it. Clipping was
-  // never the complaint: the per-channel shoulder's green cast was, and once
-  // that became a uniform scale the brighter rendering was preferred on five
-  // frames out of six. Only the brightest scene of the set wanted real rolloff.
-  float sdrHighlightKnee = 0.85f;
+  // A constant, and that is a result rather than a default left unexamined.
+  // Sixteen scenes were laddered from 0.95 to 0.35 and rated by eye; the picks
+  // spanned 0.65 to 0.95 with none below, and 0.80 is where they sit best.
+  //
+  // A per-image solver was fitted and rejected. Scene brightness does correlate
+  // with the preferred knee — median luminance gives r = -0.55 across the
+  // sixteen, in the sensible direction — but held four scenes out and refitted
+  // three thousand times, no model of any one or two of the nine measured
+  // predictors beat this constant: the best managed 0.0912 mean absolute error
+  // against 0.0889 for simply using 0.80.
+  //
+  // The reason is in the data rather than in the fit. _DSC5343 and _DSC5651
+  // have median luminances of 0.642 and 0.666 and were rated at opposite ends
+  // of the ladder, 0.95 and 0.65. No global statistic separates those, and the
+  // rating that explains why was "parts of one are better and parts of another
+  // are better" — the preference varies within a frame, not just between
+  // frames. A shoulder driven by the local base layer could act on that; one
+  // number chosen per image cannot, however it is chosen.
+  float sdrHighlightKnee = 0.80f;
   float sdrEdge = 4.0f;
   bool autoMaxBoost = true;
   PeakDetect peakDetect = PeakDetect::Softened;
