@@ -196,6 +196,14 @@ test fails, suspect the change before the test.
   payload present it never reaches the XMP. `scripts/validate.py` now
   distinguishes the two syntaxes rather than accepting either.
 
+* **Check the phone's power saving mode before believing an Android result.**
+  Samsung suppresses HDR rendering in power save, which looks exactly like a
+  file the device cannot read: recognised, listed as Ultra HDR, rendered flat.
+  It cost a round of testing and nearly a round of encoder changes chasing a
+  difference in gain map channel count that was not the problem. Use
+  `scripts/make_testcard.py` — the card either reads "HDR ON" or it does not —
+  and confirm on a second device before concluding anything about the file.
+
 * **iMessage rebuilds the file from Apple's own gain map description, not the
   standard one.** It re-encodes, discards every ISO 21496-1 segment, and keeps
   what it recognises — so a standards-perfect file arrives as a single flat SDR
