@@ -32,10 +32,20 @@ import UniformTypeIdentifiers
 
 let args = CommandLine.arguments
 guard args.count > 2 else {
-    print("usage: swift to_heic.swift <in.jpg> <out.heic> [--quality 0.9]")
+    print("usage: swift to_heic.swift <in.jpg> <out.heic> [--quality 0.9] "
+          + "[--full] [--iso-only]")
     exit(2)
 }
 let inPath = args[1], outPath = args[2]
+// Half resolution by default: it is what both an iPhone and a Pixel write, and
+// on the reference frame it costs nothing measurable (highlight error 0.2314 EV
+// against 0.2351 for a full resolution map — both dominated by the single
+// channel conversion below) while taking the file from 9.27 MB to 7.38 MB.
+let half = !args.contains("--full")
+// Apple's own gain map auxiliary alongside the ISO one. Apple's HDR path
+// predates ISO 21496-1 and its own files still carry both; a shipping
+// third-party plug-in reports needing the Apple form specifically for iMessage.
+let dual = !args.contains("--iso-only")
 var quality = 0.9
 if let q = args.firstIndex(of: "--quality"), q + 1 < args.count {
     quality = Double(args[q + 1]) ?? 0.9
@@ -78,10 +88,25 @@ if gainMap == nil {
 }
 let gm = gainMap!
 
-// One 8-bit channel, which is the layout Apple's own HEICs use. A three
-// channel map would keep the per-channel highlight correction, but 'L008' is
-// what every decoder on this path handles.
-let w = gm.width, h = gm.height
+// One 8-bit channel, which is the layout Apple's own HEICs use — and the only
+// one available: handed a three channel '444f' map, ImageIO's HEIC writer
+// crashes inside VideoToolbox (vt_Copy_444v_Crop), so this is a hard limit of
+// the framework rather than a choice.
+//
+// It is not free. Against the three channel JPEG this file came from, measured
+// on the reference frame:
+//
+//   shadows and midtones   0.0522 EV
+//   highlights             0.2314 EV
+//   highlight hue drift    0.5665 EV
+//
+// which is the desaturation of warm highlights that the per-channel gain map
+// exists to prevent. The cost is inherent to a single channel map, not to this
+// conversion — encoding the JPEG with --channels mono and repackaging that
+// measures 0.2522 EV in the highlights, slightly worse. Averaging the stored
+// per-channel gains, as here, is the better of the two.
+let w = half ? gm.width / 2 : gm.width
+let h = half ? gm.height / 2 : gm.height
 let bytesPerRow = (w + 63) / 64 * 64
 var plane = [UInt8](repeating: 0, count: bytesPerRow * h)
 plane.withUnsafeMutableBytes { buffer in
@@ -89,6 +114,7 @@ plane.withUnsafeMutableBytes { buffer in
                         bitsPerComponent: 8, bytesPerRow: bytesPerRow,
                         space: CGColorSpaceCreateDeviceGray(),
                         bitmapInfo: CGImageAlphaInfo.none.rawValue)!
+    ctx.interpolationQuality = .high
     ctx.draw(gm, in: CGRect(x: 0, y: 0, width: w, height: h))
 }
 aux[kCGImageAuxiliaryDataInfoData] = Data(plane) as CFData
@@ -110,6 +136,10 @@ guard let dest = CGImageDestinationCreateWithURL(
 CGImageDestinationAddImage(dest, base, props as CFDictionary)
 CGImageDestinationAddAuxiliaryDataInfo(dest, kCGImageAuxiliaryDataTypeISOGainMap,
                                        aux as CFDictionary)
+if dual {
+    CGImageDestinationAddAuxiliaryDataInfo(dest, kCGImageAuxiliaryDataTypeHDRGainMap,
+                                           aux as CFDictionary)
+}
 guard CGImageDestinationFinalize(dest) else {
     print("HEIC encode failed"); exit(1)
 }
@@ -122,7 +152,10 @@ print("wrote \(outPath) (\(String(format: "%.2f", Double(size) / 1e6)) MB)")
 if let check = CGImageSourceCreateWithURL(URL(fileURLWithPath: outPath) as CFURL, nil) {
     let iso = CGImageSourceCopyAuxiliaryDataInfoAtIndex(
         check, 0, kCGImageAuxiliaryDataTypeISOGainMap) != nil
-    print("  ISO gain map present after the round trip: \(iso ? "yes" : "NO")")
+    let apple = CGImageSourceCopyAuxiliaryDataInfoAtIndex(
+        check, 0, kCGImageAuxiliaryDataTypeHDRGainMap) != nil
+    print("  ISO gain map present after the round trip:   \(iso ? "yes" : "NO")")
+    print("  Apple gain map present after the round trip: \(apple ? "yes" : "no")")
     if let img = CGImageSourceCreateImageAtIndex(check, 0,
             [kCGImageSourceDecodeRequest: kCGImageSourceDecodeToHDR] as CFDictionary) {
         print(String(format: "  content headroom %.4f (%.4f EV)",

@@ -37,6 +37,11 @@ for i in 0..<CGImageSourceGetCount(src) {
     }
     if CGImageSourceCopyAuxiliaryDataInfoAtIndex(
             src, i, kCGImageAuxiliaryDataTypeHDRGainMap) != nil {
+        // Apple's own pre-ISO format. It counts as a gain map: a file carrying
+        // only this one still has an SDR base and a map to lift it, and saying
+        // otherwise would report a natively encoded PQ file and an Apple gain
+        // map file the same way, which they are not.
+        found = true
         print("Apple HDR gain map: FOUND at index \(i) (the pre-ISO Apple format)")
     }
 }
