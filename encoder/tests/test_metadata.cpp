@@ -115,6 +115,21 @@ void xmpBlocks() {
   CHECK(gm.find("hdrgm:BaseRenditionIsHDR=\"False\"") != std::string::npos);
 }
 
+// The base image carries a marker APP2: the URN and the two version fields,
+// nothing more. Lightroom and the Pixel camera both write exactly these 34
+// bytes, and a decoder that has not yet walked MPF uses it to know the file is
+// HDR at all.
+void baseImageMarker() {
+  Bytes seg = buildIsoBaseImageSegment();
+  CHECK_EQ(seg.size(), size_t{36});  // marker(2) + length field(2) + payload(32)
+  CHECK_EQ(seg[0], uint8_t{0xff});
+  CHECK_EQ(seg[1], uint8_t{0xe2});
+  CHECK_EQ(readU16BE(&seg[2]), 34u);
+  CHECK(std::memcmp(&seg[4], kIsoGainMapUrn, kIsoGainMapUrnSize) == 0);
+  CHECK_EQ(readU16BE(&seg[4 + kIsoGainMapUrnSize]), 0u);      // minimum_version
+  CHECK_EQ(readU16BE(&seg[4 + kIsoGainMapUrnSize + 2]), 0u);  // writer_version
+}
+
 void exifPassthrough() {
   TiffSpec spec;
   spec.width = 12;
@@ -183,6 +198,7 @@ void run() {
   isoPayloadLayout();
   mpfPatching();
   xmpBlocks();
+  baseImageMarker();
   exifPassthrough();
 }
 

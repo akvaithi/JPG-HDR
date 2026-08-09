@@ -186,6 +186,29 @@ test fails, suspect the change before the test.
   it cannot yield. Button actions are not tasks either. `lr_stubs.lua` models
   the rule, so the Lua tests catch it.
 
+* **A per-channel `hdrgm` value is an `rdf:Seq`, never a comma-separated
+  attribute.** `hdrgm:GainMapMax="2.46645, 2.29249, 2.28328"` has all three
+  numbers in it and is not a form any decoder parses. It shipped for several
+  releases and measured perfectly the whole time, because Apple reads the ISO
+  rationals and libultrahdr prefers them — only the XMP-only readers (Android,
+  Google Photos, Chrome) ever saw it. To test that path, strip the ISO APP2
+  segments and run `ultrahdr_app -m 1 -j file.jpg -P` on what is left; with the
+  payload present it never reaches the XMP. `scripts/validate.py` now
+  distinguishes the two syntaxes rather than accepting either.
+
+* **A JPEG gain map cannot survive re-encoding, and that is structural.** The
+  map is a second image after the primary's EOI, so anything that decodes and
+  re-encodes the primary keeps the SDR base and nothing else — iMessage among
+  them. It is not stripping metadata; the HDR is simply not in the part it
+  re-encodes. HEIC carries the map as an item inside the container and comes
+  through intact (2.3001 EV before and after, same as an iPhone's own file);
+  `scripts/to_heic.swift` repackages one. Note that ImageIO will not hand back
+  the gain map's pixels from a JPEG source — the auxiliary dictionary has the
+  description and metadata but no `kCGImageAuxiliaryDataInfoData` — so the map
+  has to be decoded from the second image and supplied as a planar buffer. An
+  earlier version of that script missed this and concluded, wrongly, that HEIC
+  could not carry a gain map at all.
+
 * **Never combine "match the render" with `--no-auto-max-boost`.** With no cap
   to fall back on, the encoder would declare its 10-stop maximum as the photo's
   requirement, and invariant 2 does the rest. `IsoSettings.buildArguments`

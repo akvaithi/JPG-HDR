@@ -136,6 +136,7 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
 
     jo.appSegments.push_back(buildJfifAppSegment());
     if (!exifSegment.empty()) jo.appSegments.push_back(std::move(exifSegment));
+    jo.appSegments.push_back(buildIsoBaseImageSegment());
     if (opt.writeXmp)
       jo.appSegments.push_back(
           buildXmpAppSegment(buildPrimaryXmp(gainMapJpeg.size())));

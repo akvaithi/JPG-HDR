@@ -196,15 +196,33 @@ void fullExport() {
   CHECK_NEAR(p.iso.minBoost[0], report.minBoostLog2, 1e-3);
 }
 
-// The hdrgm attributes must carry one value per channel when the map is
-// multichannel. Writing only the first would tell every XMP-reading decoder to
-// apply the red range to green and blue as well.
+// The hdrgm properties must carry one value per channel when the map is
+// multichannel, and in the form the gain map spec defines: an rdf:Seq of three
+// rdf:li elements. This test used to assert a comma separated attribute, which
+// is what the encoder wrote and what no decoder reads — the values were all
+// there and all unparseable. Apple never noticed because ImageIO reads the ISO
+// rationals instead, which is how it survived every measurement here.
 void gainMapXmpCarriesEveryChannel() {
   TiffSpec spec;
   spec.width = 64;
   spec.height = 48;
-  std::string in = writeTempTiff(spec, makeHdrPattern(spec.width, spec.height, 4.0f),
-                                 "e2e_xmp.tif");
+  // Float samples, so the highlight survives as HDR: read as 16-bit the file
+  // decodes through ROMM and everything above SDR white clips, which leaves
+  // nothing for the three channels to disagree about.
+  spec.bitsPerSample = 32;
+  spec.floatSamples = true;
+  // The shared pattern's specular highlight is neutral, so all three channels
+  // measure the same ceiling and the spec's plain-attribute form is correct.
+  // Warm it up: a coloured highlight above SDR white is what drives the three
+  // maxima apart, and is the case the rdf:Seq form exists for.
+  auto px = makeHdrPattern(spec.width, spec.height, 4.0f);
+  for (size_t i = 0; i < px.size(); i += 3) {
+    if (px[i] > 1.0f) {
+      px[i + 1] *= 0.75f;
+      px[i + 2] *= 0.45f;
+    }
+  }
+  std::string in = writeTempTiff(spec, px, "e2e_xmp.tif");
   EncoderOptions o;
   o.inputPath = in;
   o.outputPath = std::string(ISO21496_TEST_TMPDIR) + "/e2e_xmp.jpg";
@@ -213,22 +231,30 @@ void gainMapXmpCarriesEveryChannel() {
   CHECK_EQ(report.gainChannels, 3);
 
   const std::string text(reinterpret_cast<const char*>(file.data()), file.size());
-  const size_t at = text.find("hdrgm:GainMapMax=\"");
+  // An element, not an attribute, and three <rdf:li> values inside it.
+  const size_t at = text.find("<hdrgm:GainMapMax>");
   CHECK(at != std::string::npos);
-  const size_t end = text.find('"', at + 18);
-  const std::string value = text.substr(at + 18, end - at - 18);
-  // Three values, comma separated, as Lightroom writes them.
-  CHECK_EQ(std::count(value.begin(), value.end(), ','), 2);
+  CHECK(text.find("hdrgm:GainMapMax=\"") == std::string::npos);
+  const size_t end = text.find("</hdrgm:GainMapMax>", at);
+  CHECK(end != std::string::npos);
+  const std::string seq = text.substr(at, end - at);
+  CHECK(seq.find("<rdf:Seq>") != std::string::npos);
+  size_t items = 0, from = 0;
+  while ((from = seq.find("<rdf:li>", from)) != std::string::npos) {
+    ++items;
+    from += 8;
+  }
+  CHECK_EQ(items, size_t{3});
 
-  // A monochrome map keeps a single value: the attribute is per channel, and
-  // there is only one.
+  // A monochrome map has one value per channel and one channel, so the spec's
+  // plain attribute form applies — which is also the only form libultrahdr's
+  // XMP reader accepts.
   o.multiChannelGainMap = false;
   Bytes monoFile = encodeToMemory(o, &report);
   const std::string monoText(reinterpret_cast<const char*>(monoFile.data()),
                              monoFile.size());
-  const size_t mAt = monoText.find("hdrgm:GainMapMax=\"");
-  const size_t mEnd = monoText.find('"', mAt + 18);
-  CHECK_EQ(std::count(monoText.begin() + mAt, monoText.begin() + mEnd, ','), 0);
+  CHECK(monoText.find("hdrgm:GainMapMax=\"") != std::string::npos);
+  CHECK(monoText.find("<hdrgm:GainMapMax>") == std::string::npos);
 }
 
 void multiChannelAndSubsampling() {

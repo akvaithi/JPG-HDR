@@ -159,22 +159,32 @@ def xmp_blocks(data, segs):
 
 
 def attr(name, xml):
-    """An hdrgm value, written either as an attribute or as an rdf:Seq.
+    """An hdrgm value's text, however it was written. See attr_form for syntax."""
+    value, _ = attr_form(name, xml)
+    return value
 
-    Adobe uses a Seq of rdf:li for the per-channel form; a comma-separated
-    attribute is the other shape in the wild. Both are returned as a list-ish
-    string so the caller can just count the values.
+
+def attr_form(name, xml):
+    """(text, form) for an hdrgm property, where form is "attribute" or "seq".
+
+    The distinction is load-bearing. The gain map spec writes a single value as
+    an XML attribute and a per-channel value as an rdf:Seq of rdf:li elements;
+    it never writes three values inside one attribute. This encoder did exactly
+    that for a while — hdrgm:GainMapMax="2.46645, 2.29249, 2.28328" — which
+    contains all the right numbers and is not the per-channel form any decoder
+    looks for. Returning both values and syntax is what lets the caller tell
+    "three channels declared" from "three channels declared legibly".
     """
     m = re.search(r'%s\s*=\s*"([^"]*)"' % re.escape(name), xml)
     if m:
-        return m.group(1)
+        return m.group(1), "attribute"
     m = re.search(r'<%s>(.*?)</%s>' % (re.escape(name), re.escape(name)), xml, re.S)
     if m:
         items = re.findall(r'<rdf:li[^>]*>([^<]*)</rdf:li>', m.group(1), re.S)
         if items:
-            return ", ".join(v.strip() for v in items)
-        return m.group(1).strip()
-    return None
+            return ", ".join(v.strip() for v in items), "seq"
+        return m.group(1).strip(), "seq"
+    return None, None
 
 
 def validate(path, r):
@@ -236,6 +246,16 @@ def validate(path, r):
 
     # -------------------------------------------------------------- ISO payload
     r.section("ISO 21496-1", "Apple: Photos, Preview, Safari, iMessage previews")
+    # The base image carries a marker APP2 — the URN and two version fields,
+    # no parameters — saying a gain map belongs to it. Lightroom and the Pixel
+    # camera both write exactly these 34 bytes. Without it a decoder has to walk
+    # MPF to the second image before it knows the file is HDR at all.
+    base_marker = any(
+        marker == 0xE2 and data[off:off + len(ISO_URN)] == ISO_URN and size == 32
+        for marker, off, size in psegs)
+    r.check(base_marker, "the base image carries the ISO 21496-1 marker APP2",
+            "" if base_marker else "34-byte APP2 holding the URN and versions")
+
     iso = parse_iso_payload(data, gsegs)
     if r.check(iso is not None, "the ISO 21496-1 URN and payload are present"):
         r.check(iso["alt_headroom"] > 0, "a positive alternate headroom is declared",
@@ -279,11 +299,21 @@ def validate(path, r):
             r.check(v is not None, f"{name} is present", v or "")
         if iso and iso["multichannel"]:
             for name in ("hdrgm:GainMapMin", "hdrgm:GainMapMax", "hdrgm:Gamma"):
-                v = attr(name, joined_g) or ""
-                r.check(v.count(",") == 2,
-                        f"{name} carries one value per channel",
-                        f'"{v}"; a single value tells an XMP-only decoder to apply '
-                        f"the red range to all three")
+                v, form = attr_form(name, joined_g)
+                v = v or ""
+                if v.count(",") != 2:
+                    # One value for three channels: an XMP-only decoder applies
+                    # the red range to green and blue too. Legal when the three
+                    # genuinely agree, which is why this is not fatal.
+                    r.check(v.count(",") == 0, f"{name} is a single coherent value",
+                            f'"{v}"')
+                    continue
+                r.check(form == "seq",
+                        f"{name} uses the rdf:Seq form for its three channels",
+                        f'"{v}" written as an {form}; three values inside one '
+                        f"attribute is not a form the spec defines, and an "
+                        f"XMP-reading decoder gets either the red channel or "
+                        f"nothing")
 
     # ------------------------------------------------------------ external tools
     r.section("External validators", "independent of anything above")

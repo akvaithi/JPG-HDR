@@ -274,6 +274,22 @@ XMP carries the Adobe `hdrgm:1.0` parameters on the gain map and a GContainer
 directory on the primary, so decoders that predate ISO 21496-1 still recognise
 the file.
 
+Two shapes in that block are not free choices. A per-channel `hdrgm` value is
+an `rdf:Seq` of three `rdf:li` elements; a single value is a plain XML
+attribute. There is no third form, and in particular three numbers inside one
+attribute — `hdrgm:GainMapMax="2.46645, 2.29249, 2.28328"` — is not the
+per-channel syntax, however much it looks like it. This encoder wrote that for
+several releases. Every measurement here stayed clean because Apple reads the
+ISO rationals and libultrahdr prefers them too, so the only readers affected
+were the XMP-only ones: Android, Google Photos, Chrome. Strip the ISO payload
+from a file and run `ultrahdr_app -P` on what is left to exercise that path
+deliberately.
+
+The base image also carries a marker APP2 of its own: the same URN and the two
+version fields, 34 bytes, no parameters. It says a gain map belongs to this
+image without a decoder having to walk MPF to the second one first. Lightroom
+and the Pixel camera both write it byte for byte.
+
 ## Memory and threading
 
 Peak memory on a 45 MP export is 678 MB, dominated by the intermediate TIFF

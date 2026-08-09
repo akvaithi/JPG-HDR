@@ -88,6 +88,26 @@ Bytes buildIsoGainMapSegment(const GainMapMetadata& m) {
   return seg;
 }
 
+Bytes buildIsoBaseImageSegment() {
+  Bytes p;
+  putBytes(p, kIsoGainMapUrn, kIsoGainMapUrnSize - 1);
+  p.push_back(0);
+  // The same two version fields the gain map's payload opens with, and nothing
+  // else: this segment says only "a gain map belongs to this image". Both
+  // Lightroom and the Pixel camera write it, byte for byte, and without it a
+  // decoder has to discover the gain map by walking MPF to the second image
+  // before it knows the file is HDR at all.
+  putU16BE(p, 0);  // minimum_version
+  putU16BE(p, 0);  // writer_version
+
+  Bytes seg;
+  seg.push_back(0xff);
+  seg.push_back(0xe2);  // APP2
+  putU16BE(seg, static_cast<uint16_t>(p.size() + 2));
+  putBytes(seg, p.data(), p.size());
+  return seg;
+}
+
 Bytes buildMpfSegmentPlaceholder() {
   Bytes p;
   putString(p, "MPF");
@@ -212,18 +232,40 @@ std::string buildPrimaryXmp(size_t gainMapLength) {
   return os.str();
 }
 
-// The hdrgm attributes take one value per channel, comma separated, when the
-// map is multichannel — Lightroom writes "2.366608, 2.507721, 2.68985". Writing
-// only the first channel's number would tell an XMP-reading decoder (Android,
-// Chrome — the ones that do not read the ISO payload) to apply the red range to
-// all three, which is a hue shift in exactly the highlights the three channels
-// exist to keep apart.
-std::string perChannel(const float (&v)[3], bool multiChannel) {
-  if (!multiChannel) return fmt(v[0]);
-  return fmt(v[0]) + ", " + fmt(v[1]) + ", " + fmt(v[2]);
+// A per-channel hdrgm property. When the three channels agree it is a plain
+// attribute; when they differ the Adobe gain map spec — and Lightroom, and the
+// Pixel camera — write an rdf:Seq of three rdf:li elements, *not* one attribute
+// holding a comma separated list. This encoder wrote the comma form, which is
+// what an XMP-reading decoder sees: Android and Chrome read these properties
+// rather than the ISO payload, so Google Photos recognised the file as Ultra
+// HDR (MPF and hdrgm:Version parse fine) and then rendered it flat, because
+// every gain parameter failed to parse as a number. Apple was unaffected
+// throughout — ImageIO reads the ISO rationals and never looks at this block —
+// which is why the file measured correct on every tool here.
+bool uniform(const float (&v)[3]) { return v[0] == v[1] && v[1] == v[2]; }
+
+std::string attrIfUniform(const char* name, const float (&v)[3],
+                          bool multiChannel) {
+  if (multiChannel && !uniform(v)) return std::string();
+  return std::string(" hdrgm:") + name + "=\"" + fmt(v[0]) + "\"";
+}
+
+std::string seqIfPerChannel(const char* name, const float (&v)[3],
+                            bool multiChannel) {
+  if (!multiChannel || uniform(v)) return std::string();
+  std::ostringstream os;
+  os << "<hdrgm:" << name << "><rdf:Seq>";
+  for (int c = 0; c < 3; ++c) os << "<rdf:li>" << fmt(v[c]) << "</rdf:li>";
+  os << "</rdf:Seq></hdrgm:" << name << ">";
+  return os.str();
 }
 
 std::string buildGainMapXmp(const GainMapMetadata& m) {
+  static const char* kNames[] = {"GainMapMin", "GainMapMax", "Gamma",
+                                 "OffsetSDR", "OffsetHDR"};
+  const float(*values[])[3] = {&m.minBoost, &m.maxBoost, &m.gamma,
+                               &m.baseOffset, &m.alternateOffset};
+
   std::ostringstream os;
   os << "<?xpacket begin=\"\xEF\xBB\xBF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>"
      << "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">"
@@ -231,15 +273,15 @@ std::string buildGainMapXmp(const GainMapMetadata& m) {
      << "<rdf:Description rdf:about=\"\""
      << " xmlns:hdrgm=\"http://ns.adobe.com/hdr-gain-map/1.0/\""
      << " hdrgm:Version=\"1.0\""
-     << " hdrgm:GainMapMin=\"" << perChannel(m.minBoost, m.multiChannel) << "\""
-     << " hdrgm:GainMapMax=\"" << perChannel(m.maxBoost, m.multiChannel) << "\""
-     << " hdrgm:Gamma=\"" << perChannel(m.gamma, m.multiChannel) << "\""
-     << " hdrgm:OffsetSDR=\"" << perChannel(m.baseOffset, m.multiChannel) << "\""
-     << " hdrgm:OffsetHDR=\"" << perChannel(m.alternateOffset, m.multiChannel) << "\""
      << " hdrgm:HDRCapacityMin=\"" << fmt(m.baseHeadroom) << "\""
      << " hdrgm:HDRCapacityMax=\"" << fmt(m.alternateHeadroom) << "\""
-     << " hdrgm:BaseRenditionIsHDR=\"False\"/>"
-     << "</rdf:RDF></x:xmpmeta><?xpacket end=\"w\"?>";
+     << " hdrgm:BaseRenditionIsHDR=\"False\"";
+  for (int i = 0; i < 5; ++i)
+    os << attrIfUniform(kNames[i], *values[i], m.multiChannel);
+  os << ">";
+  for (int i = 0; i < 5; ++i)
+    os << seqIfPerChannel(kNames[i], *values[i], m.multiChannel);
+  os << "</rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end=\"w\"?>";
   return os.str();
 }
 

@@ -30,6 +30,10 @@ struct GainMapMetadata {
 Bytes buildIsoGainMapPayload(const GainMapMetadata& m);
 // The complete APP2 segment for the gain map image.
 Bytes buildIsoGainMapSegment(const GainMapMetadata& m);
+// The marker APP2 segment for the *base* image: the URN and the two version
+// fields, no parameters. Tells a decoder the image has a gain map without
+// making it walk MPF first.
+Bytes buildIsoBaseImageSegment();
 
 // A fixed-size APP2 MPF segment for a two-image file. Sizes and the offset of
 // the second image are zero until patchMpfSegment fills them in.
