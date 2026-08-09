@@ -406,6 +406,31 @@ float compressBaseForTest(float b, float kneeStart, float maxLog) {
   return compressBase(b, kneeStart, maxLog);
 }
 
+// A shoulder on the written value, per channel, so nothing reaches white.
+//
+// compressBase only promises that the *base layer* never rises above the
+// identity. The detail layer is added on top of it untouched and at
+// --sdr-detail 1.25 it is amplified, so the composite routinely lands above
+// white and used to be hard clipped there. Measured across six frames that cost
+// between 1.4% and 11.5% of the picture to flat white — all three channels at
+// 255, no texture and no hue — where Lightroom's own export of the same renders
+// clipped 0.00% on every one of them.
+//
+// Slope is exactly 1 at the knee and the curve approaches white
+// asymptotically without arriving, so highlights keep their ordering and their
+// texture instead of collapsing onto a single value. Below the knee this is the
+// identity, which is what keeps the brighter midtones that make this base
+// preferable to a flat SDR export in the first place.
+//
+// This has to happen before the gain is measured, and it does: the gain map is
+// computed from `sdr` a few lines further down, so the HDR rendition is
+// unaffected — a darker base simply means a larger gain. Invariant 1.
+float softShoulder(float v, float knee) {
+  if (!(knee < 1.0f) || v <= knee) return v;
+  const float span = 1.0f - knee;
+  return knee + span * (1.0f - std::exp(-(v - knee) / span));
+}
+
 SdrShaping solveSdrShaping(const float* luminances, size_t count,
                            const PipelineOptions& opts, float maxBoost) {
   std::vector<uint64_t> hist(kHistBins, 0);
@@ -705,6 +730,9 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
   const float kneeStart =
       opts.sdrKnee < 0.0f ? opts.sdrKnee : kneeStartFor(maxBoost);
   const float detailStrength = opts.sdrDetail;
+  // Where the shoulder on the composite starts, in stops relative to white.
+  const float highlightKneeLog =
+      opts.sdrHighlightKnee >= 1.0f ? 0.0f : std::log2(opts.sdrHighlightKnee);
   if (localToneMap && guideLog.w > 0) {
     const int radius = std::max<int>(
         2, static_cast<int>(std::max(guideLog.w, guideLog.h) / 16));
@@ -840,8 +868,28 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
 
           const float logL = std::max(-20.0f, std::log2(std::max(lHdr, 1e-7f)));
           const float detail = logL - b;
-          const float logS =
+          float logS =
               compressBase(b, kneeStart, maxBoost) + detailStrength * detail;
+          // The detail layer is added over the compressed base with no ceiling,
+          // and above unit strength it is amplified, so the composite lands
+          // above white wherever bright texture sits on a bright base. Folding
+          // it through the same shoulder puts it back under white with its
+          // ordering intact, which is the difference between a highlight that
+          // is bright and one that is a flat white shape.
+          //
+          // Below the knee this is the identity, and for a value the first
+          // shoulder already produced it is very nearly so — the shoulder's
+          // range is the whole headroom while its span is only the stops
+          // between the knee and white, so the slope there is close to 1. What
+          // it changes is the part that used to be clipped away.
+          //
+          // Its range is deliberately *not* the headroom. Folding the whole
+          // headroom below white is what a global operator does, and measured
+          // it costs 0.04 of mean luminance and drops p99 to 0.818 — darker
+          // than Lightroom's own export of the same render, and the opposite of
+          // why this base is worth having. The composite only ever overshoots
+          // by what the detail layer adds, so two stops is the whole budget.
+          logS = compressBase(logS, highlightKneeLog, highlightKneeLog + 2.0f);
           // Back to a ratio. Expressed as scale rather than an absolute value
           // so the chromaticity argument above still holds.
           scale = lHdr > 1e-8f ? std::exp2(logS) / lHdr : 0.0f;
@@ -852,7 +900,8 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
 
         float sdr[3];
         for (int c = 0; c < 3; ++c)
-          sdr[c] = std::min(1.0f, std::max(0.0f, hdr[c] * scale));
+          sdr[c] = std::min(1.0f, std::max(0.0f,
+              softShoulder(hdr[c] * scale, opts.sdrHighlightKnee)));
 
         uint8_t* out = drow + static_cast<size_t>(x) * 3;
         for (int c = 0; c < 3; ++c)

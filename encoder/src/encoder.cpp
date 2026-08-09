@@ -46,6 +46,7 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
   po.toneMap = opt.toneMap;
   po.sdrDetail = opt.sdrDetail;
   po.sdrKnee = opt.sdrKnee;
+  po.sdrHighlightKnee = opt.sdrHighlightKnee;
   po.sdrEdge = opt.sdrEdge;
   po.autoMaxBoost = opt.autoMaxBoost;
   po.peakDetect = opt.peakDetect;

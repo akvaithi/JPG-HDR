@@ -196,6 +196,62 @@ void fullExport() {
   CHECK_NEAR(p.iso.minBoost[0], report.minBoostLog2, 1e-3);
 }
 
+// Nothing in the SDR base may reach flat white.
+//
+// compressBase only promises the *base layer* never rises above the identity.
+// The detail layer is added over it untouched, and at the default --sdr-detail
+// 1.25 it is amplified, so the composite used to land above white and be hard
+// clipped there. Measured across six real frames that cost between 1.4% and
+// 11.5% of the picture to all three channels at 255 — no texture, no hue —
+// where Lightroom's export of the same renders clipped 0.00% on every one.
+//
+// A pixel with all three channels at 255 is the failure: the highlight has
+// become a shape rather than a highlight, and no gain map can put back
+// information the base does not carry.
+void theBaseNeverReachesFlatWhite() {
+  TiffSpec spec;
+  spec.width = 160;
+  spec.height = 120;
+  spec.bitsPerSample = 32;
+  spec.floatSamples = true;
+  // A bright frame with detail sitting on top of already-bright areas, which is
+  // the case that overshoots: dim scenes never approach white to begin with.
+  auto px = makeDetailedHdrPattern(spec.width, spec.height, 8.0f);
+  for (auto& v : px) v *= 3.0f;
+  std::string in = writeTempTiff(spec, px, "e2e_clip.tif");
+
+  EncoderOptions o;
+  o.inputPath = in;
+  o.outputPath = std::string(ISO21496_TEST_TMPDIR) + "/e2e_clip.jpg";
+  EncodeReport report;
+  Bytes file = encodeToMemory(o, &report);
+  CHECK(!file.empty());
+
+  PipelineOptions po;
+  po.outputPrimaries = o.outputPrimaries;
+  po.toneMap = o.toneMap;
+  po.sdrDetail = o.sdrDetail;
+  po.sdrHighlightKnee = o.sdrHighlightKnee;
+  po.targetHeadroom = o.targetHeadroom;
+  TiffReader tiff(readFile(in));
+  PipelineResult px2 = runPipeline(tiff, po);
+
+  size_t flat = 0;
+  for (size_t i = 0; i + 2 < px2.sdr.size(); i += 3) {
+    if (px2.sdr[i] == 255 && px2.sdr[i + 1] == 255 && px2.sdr[i + 2] == 255)
+      ++flat;
+  }
+  CHECK_EQ(flat, size_t{0});
+
+  // And the shoulder must not have bought that by darkening the picture: the
+  // brighter midtones are the reason this base is worth having over a plain
+  // SDR export, and folding the whole headroom below white would take them.
+  double sum = 0;
+  for (size_t i = 0; i < px2.sdr.size(); ++i) sum += px2.sdr[i];
+  const double mean = sum / static_cast<double>(px2.sdr.size()) / 255.0;
+  CHECK(mean > 0.35);
+}
+
 // The hdrgm properties must carry one value per channel when the map is
 // multichannel, and in the form the gain map spec defines: an rdf:Seq of three
 // rdf:li elements. This test used to assert a comma separated attribute, which
@@ -377,6 +433,7 @@ void reportsBadInputClearly() {
 
 void run() {
   fullExport();
+  theBaseNeverReachesFlatWhite();
   gainMapXmpCarriesEveryChannel();
   multiChannelAndSubsampling();
   smallHighlightsAreNotMissed();

@@ -57,6 +57,9 @@ struct PipelineOptions {
   // from the headroom". More negative compresses more of the picture, which is
   // what makes room for the detail layer to read as depth.
   float sdrKnee = 0.0f;
+  // Where the per-channel shoulder on the written SDR value starts. 1.0
+  // disables it and restores the hard clip.
+  float sdrHighlightKnee = 0.85f;
   // Guided-filter edge threshold, in stops squared. Larger smooths through more
   // texture, leaving more of it in the detail layer to be handed back.
   float sdrEdge = 4.0f;

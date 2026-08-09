@@ -57,6 +57,12 @@ const char kUsage[] =
     "  --tone-map <name>        local (default), reinhard, filmic or clip. Only\n"
     "                           local preserves highlight separation; the\n"
     "                           others are curves, and a curve cannot.\n"
+    "  --highlight-knee <v>     Where the per-channel shoulder on the written\n"
+    "                           SDR value starts (default 0.85). The detail\n"
+    "                           layer is added over the compressed base without\n"
+    "                           a ceiling, so without this the composite is hard\n"
+    "                           clipped and highlights collapse to flat white.\n"
+    "                           1.0 restores that clip.\n"
     "  --sdr-detail <x>         Local tone mapping only: how much of the detail\n"
     "                           layer is put back over the compressed base\n"
     "                           (default 1.0 = in full, 0 = a plain shoulder).\n"
@@ -160,6 +166,11 @@ bool parseArguments(int argc, char** argv, EncoderOptions* out, bool* handled) {
       if (v == "mono" || v == "Monochrome" || v == "1") out->multiChannelGainMap = false;
       else if (v == "rgb" || v == "RGB" || v == "3") out->multiChannelGainMap = true;
       else fail("unknown --channels: " + v + " (use mono or rgb)");
+    } else if (a == "--highlight-knee") {
+      needValue(argc, argv, i++, "--highlight-knee", &v);
+      out->sdrHighlightKnee = toFloat(v, "--highlight-knee");
+      if (!(out->sdrHighlightKnee > 0.0f) || out->sdrHighlightKnee > 1.0f)
+        fail("--highlight-knee must be above 0 and at most 1");
     } else if (a == "--apple-compatible") {
       out->appleCompatible = true;
     } else if (a == "--quality" || a == "-q") {

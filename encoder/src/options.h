@@ -59,6 +59,9 @@ struct EncoderOptions {
   ToneMapOperator toneMap = ToneMapOperator::Local;
   float sdrDetail = 1.25f;
   float sdrKnee = 0.0f;  // 0 = derive from the headroom
+  // Where the per-channel shoulder on the written SDR value starts. 1.0
+  // disables it and restores the hard clip.
+  float sdrHighlightKnee = 0.85f;
   float sdrEdge = 4.0f;
   bool autoMaxBoost = true;
   PeakDetect peakDetect = PeakDetect::Softened;
