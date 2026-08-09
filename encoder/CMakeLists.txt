@@ -59,6 +59,18 @@ if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
   set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "" FORCE)
 endif()
 
+# The HEIC repackager. macOS only, and deliberately a second program: it needs
+# an HEVC encoder, which means ImageIO, and the whole point of the encoder above
+# is that it has no dependencies on any platform.
+if(APPLE)
+  enable_language(OBJC)
+  add_executable(iso21496_heic src/heic_tool.m)
+  target_compile_options(iso21496_heic PRIVATE -fobjc-arc)
+  target_link_libraries(iso21496_heic PRIVATE
+    "-framework Foundation" "-framework CoreGraphics" "-framework ImageIO")
+  install(TARGETS iso21496_heic RUNTIME DESTINATION bin)
+endif()
+
 option(ISO21496_BUILD_TESTS "Build the test suite" ON)
 if(ISO21496_BUILD_TESTS)
   enable_testing()

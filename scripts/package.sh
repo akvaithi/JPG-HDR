@@ -30,6 +30,13 @@ cp -R "$bundle_src" "$dist/"
 bundle="$dist/iso21496.lrdevplugin"
 
 [ -n "$mac_binary" ] && install -m 0755 "$mac_binary" "$bundle/bin/macOS/iso21496_encoder"
+# The HEIC repackager, which sits beside the encoder in the same build tree.
+# macOS only and optional: the plug-in offers the HEIC export only when this is
+# present, so a bundle built without it — every Windows one — still works.
+if [ -n "$mac_binary" ] && [ -x "$(dirname "$mac_binary")/iso21496_heic" ]; then
+	install -m 0755 "$(dirname "$mac_binary")/iso21496_heic" \
+		"$bundle/bin/macOS/iso21496_heic"
+fi
 [ -n "$win_binary" ] && install -m 0755 "$win_binary" "$bundle/bin/windows/iso21496_encoder.exe"
 
 # A Linux binary is useful for CI but must not ship to photographers.

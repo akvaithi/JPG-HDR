@@ -47,6 +47,12 @@ chmod +x "$dest_dir/$binary_name"
 
 if [ "$platform" = macOS ]; then
 	echo "architectures: $(lipo -archs "$dest_dir/$binary_name")"
+	# The HEIC repackager, built only on macOS because it is nothing but
+	# ImageIO. The plug-in offers that export only when this is present.
+	if [ -x "$repo_root/encoder/build/iso21496_heic" ]; then
+		cp "$repo_root/encoder/build/iso21496_heic" "$dest_dir/iso21496_heic"
+		chmod +x "$dest_dir/iso21496_heic"
+	fi
 fi
 
 # Exercise the plug-in's Lua against the binary we just built, when a Lua
