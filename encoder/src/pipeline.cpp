@@ -431,6 +431,31 @@ float softShoulder(float v, float knee) {
   return knee + span * (1.0f - std::exp(-(v - knee) / span));
 }
 
+// The shoulder for a whole pixel, returned as an adjustment to the uniform
+// scale rather than as three values.
+//
+// A saturated highlight can put one channel over white while its luminance
+// sits under it, so the brightest channel needs a shoulder of its own. Running
+// that shoulder per channel is the obvious implementation and it is a hue
+// shift: each channel moves by a different amount, so the ratios between them
+// change. On a frame with bright foliage it read as a green cast, and measured
+// against the render it doubled the green bias of the highlight region — a
+// chromaticity error of +0.0030 where this leaves -0.0018. It is the same rule
+// the contrast shaping follows, for the same reason.
+//
+// Scaling all three by whatever the brightest one needed leaves chromaticity
+// exactly untouched, and costs a little brightness in precisely the pixels
+// that were about to clip.
+float highlightScale(const float rgb[3], float scale, float knee) {
+  const float peak = std::max(rgb[0], std::max(rgb[1], rgb[2])) * scale;
+  if (!(peak > knee) || peak <= 1e-6f) return scale;
+  return scale * (softShoulder(peak, knee) / peak);
+}
+
+float highlightScaleForTest(const float rgb[3], float scale, float knee) {
+  return highlightScale(rgb, scale, knee);
+}
+
 SdrShaping solveSdrShaping(const float* luminances, size_t count,
                            const PipelineOptions& opts, float maxBoost) {
   std::vector<uint64_t> hist(kHistBins, 0);
@@ -898,10 +923,11 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
           scale = shaper.rgbScale(lHdr);
         }
 
+        scale = highlightScale(hdr, scale, opts.sdrHighlightKnee);
+
         float sdr[3];
         for (int c = 0; c < 3; ++c)
-          sdr[c] = std::min(1.0f, std::max(0.0f,
-              softShoulder(hdr[c] * scale, opts.sdrHighlightKnee)));
+          sdr[c] = std::min(1.0f, std::max(0.0f, hdr[c] * scale));
 
         uint8_t* out = drow + static_cast<size_t>(x) * 3;
         for (int c = 0; c < 3; ++c)

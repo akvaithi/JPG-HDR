@@ -126,6 +126,11 @@ SdrShaping solveSdrShaping(const float* luminances, size_t count,
 // reconstructing it from a rendered image. `b` and the result are log2
 // luminance relative to SDR white.
 float compressBaseForTest(float b, float kneeStart, float maxLog);
+// The highlight shoulder, as the adjusted uniform scale it produces. Exposed so
+// a test can assert the property that matters — that it is a scale, and so
+// cannot move the channels relative to each other — without depending on a
+// rendered frame happening to contain a saturated highlight.
+float highlightScaleForTest(const float rgb[3], float scale, float knee);
 float clampf(float v, float lo, float hi);
 
 }  // namespace iso21496

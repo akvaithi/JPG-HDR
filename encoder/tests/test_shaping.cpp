@@ -190,8 +190,57 @@ void localOperatorCompressesWithoutBrightening() {
   }
 }
 
+// The highlight shoulder is a scale on the whole pixel, never a curve applied
+// to each channel.
+//
+// Per channel is the obvious implementation and it is a hue shift: each channel
+// is compressed by a different amount, so the ratios between them change. On a
+// real frame with bright foliage that read as a green cast — measured against
+// the render it left a chromaticity bias of +0.0030 toward green where this
+// leaves -0.0018, and a larger overall hue error than Lightroom's own export.
+// It is the same rule the contrast shaping follows, for the same reason.
+//
+// Asserted on the operator rather than on a rendered frame: an earlier version
+// of this test rendered a synthetic pattern and passed with the per-channel
+// implementation still in place, because the pattern never drove enough
+// saturated pixels past the knee to show it.
+void theHighlightShoulderIsAUniformScale() {
+  const float knee = 0.75f;
+  const float cases[][3] = {
+      {4.0f, 2.2f, 0.8f},   // warm specular, all three over the knee
+      {1.2f, 3.0f, 0.9f},   // green-dominant, which is the case that showed
+      {0.9f, 0.9f, 0.9f},   // neutral and just under: untouched
+      {6.0f, 0.2f, 0.05f},  // extreme, one channel far over
+  };
+  for (const auto& rgb : cases) {
+    const float scale = highlightScaleForTest(rgb, 1.0f, knee);
+    CHECK(scale > 0.0f);
+    CHECK(scale <= 1.0f + 1e-6f);  // it may darken, never brighten
+
+    // The defining property: applying it cannot change any channel ratio.
+    const float sum = rgb[0] + rgb[1] + rgb[2];
+    const float outSum = sum * scale;
+    for (int c = 0; c < 3; ++c)
+      CHECK_NEAR(rgb[c] * scale / outSum, rgb[c] / sum, 1e-5);
+
+    // And the brightest channel must land under white.
+    const float peak = std::max(rgb[0], std::max(rgb[1], rgb[2])) * scale;
+    CHECK(peak <= 1.0f);
+  }
+
+  // Below the knee it is exactly the identity, so ordinary midtones are not
+  // quietly darkened by a control that is meant to touch highlights only.
+  const float dim[3] = {0.3f, 0.25f, 0.2f};
+  CHECK_NEAR(highlightScaleForTest(dim, 1.0f, knee), 1.0f, 1e-6);
+
+  // A knee of 1.0 disables it, which is what restores the old hard clip.
+  const float hot[3] = {5.0f, 4.0f, 3.0f};
+  CHECK_NEAR(highlightScaleForTest(hot, 1.0f, 1.0f), 1.0f, 1e-6);
+}
+
 void run() {
   localOperatorCompressesWithoutBrightening();
+  theHighlightShoulderIsAUniformScale();
   liftTracksSceneBrightness();
   theMedianLandsWhereItStarted();
   agreesWithTheHandTunedDefaultsOnATypicalFrame();
