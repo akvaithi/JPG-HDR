@@ -172,6 +172,14 @@ void fullExport() {
   CHECK(p.iso.maxBoost[0] > 2.0f && p.iso.maxBoost[0] <= 4.0f);
   CHECK_NEAR(report.measuredHeadroom, std::log2(6.0), 0.15);
 
+  // Reported for auditing a batch, not used by the pipeline: the share of the
+  // render the edit put above SDR white. The synthetic pattern's specular patch
+  // is about a tenth of the frame, so this must be a real fraction rather than
+  // zero or everything — the failure worth catching is a statistic that is
+  // silently never populated.
+  CHECK(report.fractionAboveWhite > 0.0f);
+  CHECK(report.fractionAboveWhite < 0.5f);
+
   // The declared alternate headroom must be what the image needs, not the
   // 4.0 EV ceiling that was asked for. Declaring the ceiling would make a
   // decoder scale the gain by display_headroom / 4.0 and render the photo

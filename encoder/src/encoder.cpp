@@ -191,6 +191,7 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
     report->sdrLiftEV = px.sdrLiftEV;
     report->sdrContrast = px.sdrContrast;
     report->midtoneAnchor = px.midtoneAnchor;
+    report->fractionAboveWhite = px.fractionAboveWhite;
     report->inputPrimaries = primariesName(px.resolvedInputPrimaries);
     report->inputTransfer = transferName(px.resolvedInputTransfer);
     report->seconds =

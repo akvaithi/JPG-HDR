@@ -121,6 +121,7 @@ struct PipelineResult {
   float sdrLiftEV = 0.0f;
   float sdrContrast = 1.0f;
   float midtoneAnchor = 0.0f;      // luminance the lift was solved at
+  float fractionAboveWhite = 0.0f;  // share of the render above SDR white
 };
 
 PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts);

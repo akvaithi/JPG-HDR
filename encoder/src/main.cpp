@@ -26,13 +26,15 @@ int main(int argc, char** argv) {
           "\"maxBoostLog2\":%.4f,\"declaredHeadroom\":%.4f,"
           "\"measuredHeadroom\":%.4f,\"truePeakHeadroom\":%.4f,"
           "\"autoShaped\":%s,\"sdrLiftEV\":%.4f,\"sdrContrast\":%.4f,"
-          "\"midtoneAnchor\":%.5f,\"inputPrimaries\":\"%s\","
+          "\"midtoneAnchor\":%.5f,\"aboveSdrWhite\":%.4f,"
+          "\"inputPrimaries\":\"%s\","
           "\"inputTransfer\":\"%s\",\"seconds\":%.3f}\n",
           r.width, r.height, r.gainWidth, r.gainHeight, r.gainChannels,
           r.primaryBytes, r.gainMapBytes, r.totalBytes, r.minBoostLog2,
           r.maxBoostLog2, r.declaredHeadroom, r.measuredHeadroom,
           r.truePeakHeadroom, r.autoShaped ? "true" : "false", r.sdrLiftEV,
-          r.sdrContrast, r.midtoneAnchor, r.inputPrimaries.c_str(),
+          r.sdrContrast, r.midtoneAnchor, r.fractionAboveWhite,
+          r.inputPrimaries.c_str(),
           r.inputTransfer.c_str(), r.seconds);
     }
     return 0;

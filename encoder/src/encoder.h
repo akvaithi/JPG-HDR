@@ -26,6 +26,9 @@ struct EncodeReport {
   float sdrLiftEV = 0.0f;
   float sdrContrast = 1.0f;
   float midtoneAnchor = 0.0f;
+  // How much of the render sits above SDR white. Reported for auditing a batch
+  // rather than used: it is a property of the edit, not something to correct.
+  float fractionAboveWhite = 0.0f;
   std::string inputPrimaries;
   std::string inputTransfer;
   double seconds = 0.0;

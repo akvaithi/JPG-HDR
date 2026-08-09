@@ -137,6 +137,19 @@ float histPercentile(const std::vector<uint64_t>& hist, uint64_t total,
   return std::pow(2.0f, kHistHi);
 }
 
+// The share of the image above a given luminance. The inverse question to
+// histPercentile, and the one worth reporting: how much of this frame did the
+// edit put above SDR white.
+double histFractionAbove(const std::vector<uint64_t>& hist, uint64_t total,
+                         float luminance) {
+  if (total == 0) return 0.0;
+  const int from = histBin(luminance) + 1;
+  uint64_t above = 0;
+  for (int i = std::min(kHistBins, std::max(0, from)); i < kHistBins; ++i)
+    above += hist[i];
+  return static_cast<double>(above) / static_cast<double>(total);
+}
+
 struct AutoShape {
   float liftEV = 0.0f;
   float contrast = 1.0f;
@@ -725,6 +738,12 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
     }
     measured = peak > 1.0f ? std::log2(peak) : 0.0f;
     res.measuredHeadroom = measured;
+    // Not used by anything in the pipeline: reported so a batch export can be
+    // audited afterwards. A frame whose edit pushed a large part of the picture
+    // above SDR white is the one whose SDR base will look bright and flat, and
+    // no encoder setting puts back the separation the edit spent.
+    res.fractionAboveWhite = static_cast<float>(
+        histFractionAbove(hist, histTotal, 1.0f));
     res.truePeakHeadroom = truePeak > 1.0f ? std::log2(truePeak) : 0.0f;
     if (opts.autoMaxBoost) {
       // Exactly what was measured, with no slack. A sixth of a stop used to be
