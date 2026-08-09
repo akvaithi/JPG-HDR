@@ -82,5 +82,5 @@ if __name__ == "__main__":
     ch3 = [(0.0, 2.466447, 1.0, 0.015625, 0.015625),
            (0.0, 2.292490, 1.0, 0.015625, 0.015625),
            (0.0, 2.283278, 1.0, 0.015625, 0.015625)]
-    build("fix1.jpg", "ultimate_444f.jpg", 2.300056, ch3, FMT_444F)
-    build("fix1.jpg", "ultimate_l008.jpg", 2.300056, ch3, FMT_L008)
+    SRC = sys.argv[1] if len(sys.argv) > 1 else "fix1.jpg"
+    build(SRC, sys.argv[2] if len(sys.argv) > 2 else "ultimate_l008.jpg", 2.300056, ch3, FMT_L008)
