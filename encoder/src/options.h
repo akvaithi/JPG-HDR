@@ -32,6 +32,16 @@ struct EncoderOptions {
   // the chroma planes of a gain map are nearly flat, so on the reference frame
   // three channels cost 1.8% more file than one.
   bool multiChannelGainMap = true;
+
+  // Describe the gain map in Apple's XMP namespaces as well as the standard
+  // ones, which is what lets it survive an iMessage send — that pipeline
+  // re-encodes the file, discards every ISO 21496-1 segment, and rebuilds from
+  // what it recognises. Only works on a single channel map: a three channel one
+  // declared as single channel was tested and arrived flattened, so this turns
+  // multiChannelGainMap off rather than pretending. That costs 0.25 EV in
+  // saturated highlights and 0.61 EV of hue drift, on 10% of the reference
+  // frame, and buys the photo arriving as HDR at all.
+  bool appleCompatible = false;
   int quality = 90;
   int gainMapQuality = 85;
 

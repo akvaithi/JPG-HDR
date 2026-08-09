@@ -24,6 +24,11 @@ const char kUsage[] =
     "  --subsample <1|2|4>      Gain map scale: 1 = full (default), 2 = half,\n"
     "                           4 = quarter resolution.\n"
     "  --channels <mono|rgb>    Gain map channels: rgb (default) or mono.\n"
+    "  --apple-compatible       Also describe the gain map the way Apple does,\n"
+    "                           so the photo survives being sent over iMessage.\n"
+    "                           Forces a single channel map, which Apple's\n"
+    "                           pipeline requires: costs 0.25 EV in saturated\n"
+    "                           highlights and 0.61 EV of hue drift.\n"
     "  --quality <60-100>       Baseline JPEG quality (default 90).\n"
     "\n"
     "SDR base image look (affects only the rendition seen without an HDR\n"
@@ -155,6 +160,8 @@ bool parseArguments(int argc, char** argv, EncoderOptions* out, bool* handled) {
       if (v == "mono" || v == "Monochrome" || v == "1") out->multiChannelGainMap = false;
       else if (v == "rgb" || v == "RGB" || v == "3") out->multiChannelGainMap = true;
       else fail("unknown --channels: " + v + " (use mono or rgb)");
+    } else if (a == "--apple-compatible") {
+      out->appleCompatible = true;
     } else if (a == "--quality" || a == "-q") {
       needValue(argc, argv, i++, "--quality", &v);
       out->quality = toInt(v, "--quality");

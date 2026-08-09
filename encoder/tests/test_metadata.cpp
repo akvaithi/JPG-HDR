@@ -115,6 +115,41 @@ void xmpBlocks() {
   CHECK(gm.find("hdrgm:BaseRenditionIsHDR=\"False\"") != std::string::npos);
 }
 
+// Apple's own description of the gain map, which is what survives an iMessage
+// send — that pipeline discards every ISO 21496-1 segment and rebuilds the file
+// from what it recognises. Sent both ways: with this block the photo arrives at
+// 2.3001 EV with 9.5% of the frame above SDR white, without it at 0.00 EV.
+void appleGainMapBlock() {
+  GainMapMetadata m;
+  m.multiChannel = false;
+  m.appleGainMap = true;
+  m.maxBoost[0] = 2.3f;
+  m.alternateHeadroom = 2.3f;
+  const std::string xmp = buildGainMapXmp(m);
+
+  CHECK(xmp.find("urn:com:apple:photo:2020:aux:hdrgainmap") != std::string::npos);
+  CHECK(xmp.find("http://ns.apple.com/HDRToneMap/1.0/") != std::string::npos);
+  // 'L008'. Apple checks the map really is single channel — a three channel one
+  // declared as L008 was sent and arrived flattened — so the declaration has to
+  // follow the channel count rather than lead it.
+  CHECK(xmp.find("<apdi:StoredFormat>1278226488</apdi:StoredFormat>") !=
+        std::string::npos);
+  // The standard block is still there for everyone who is not Apple.
+  CHECK(xmp.find("hdrgm:Version=\"1.0\"") != std::string::npos);
+
+  // Off by default: the cost is a single channel gain map, and nothing should
+  // pay it unless it was asked for.
+  GainMapMetadata plain;
+  CHECK(buildGainMapXmp(plain).find("apdi:") == std::string::npos);
+
+  // Three channels declare '444f', so the two can never disagree.
+  GainMapMetadata rgb;
+  rgb.multiChannel = true;
+  rgb.appleGainMap = true;
+  CHECK(buildGainMapXmp(rgb).find("<apdi:StoredFormat>875836518</apdi:StoredFormat>") !=
+        std::string::npos);
+}
+
 // The base image carries a marker APP2: the URN and the two version fields,
 // nothing more. Lightroom and the Pixel camera both write exactly these 34
 // bytes, and a decoder that has not yet walked MPF uses it to know the file is
@@ -199,6 +234,7 @@ void run() {
   mpfPatching();
   xmpBlocks();
   baseImageMarker();
+  appleGainMapBlock();
   exifPassthrough();
 }
 

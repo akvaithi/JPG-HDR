@@ -16,6 +16,10 @@ constexpr size_t kIsoGainMapUrnSize = 28;
 struct GainMapMetadata {
   bool multiChannel = false;
   bool useBaseColorSpace = true;
+  // Also describe the gain map in Apple's own XMP namespaces. Required for the
+  // file to survive an iMessage send, and only effective on a genuinely single
+  // channel map — see buildAppleGainMapBlock.
+  bool appleGainMap = false;
   float baseHeadroom = 0.0f;       // log2, 0 for an SDR base image
   float alternateHeadroom = 4.0f;  // log2, the user's target
   float minBoost[3] = {0, 0, 0};   // log2

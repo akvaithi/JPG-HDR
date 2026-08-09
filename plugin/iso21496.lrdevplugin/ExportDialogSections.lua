@@ -29,7 +29,7 @@ function ExportDialogSections.mainSection(f, properties)
 		synopsis = bind {
 			keys = {
 				'iso_target_headroom', 'iso_sdr_detail', 'iso_color_space',
-				'iso_jpeg_quality',
+				'iso_jpeg_quality', 'iso_apple_compatible',
 			},
 			operation = function() return IsoSettings.summary(properties) end,
 		},
@@ -181,8 +181,24 @@ function ExportDialogSections.advancedSection(f, properties)
 
 		f:separator { fill_horizontal = 1 },
 
+		f:row {
+			f:static_text { title = '', width = share 'iso_adv_label_width' },
+			f:checkbox {
+				title = LOC '$$$/Iso21496/AppleCompatible=Survive being sent over iMessage',
+				value = bind 'iso_apple_compatible',
+			},
+		},
+		f:row {
+			f:static_text { title = '', width = share 'iso_adv_label_width' },
+			f:static_text {
+				title = LOC '$$$/Iso21496/AppleHint=iMessage rebuilds the photo from the parts it recognises, so a standards-only file arrives flat however correct it is. This adds Apple\'s own description of the gain map. It costs the per-channel highlight correction — saturated highlights drift about 0.25 EV toward neutral — and nothing else.',
+				width_in_chars = 58,
+				height_in_lines = 4,
+				text_color = LrColor(0.4, 0.4, 0.4),
+			},
+		},
 
-
+		f:separator { fill_horizontal = 1 },
 
 		f:row {
 			f:static_text { title = '', width = share 'iso_adv_label_width' },

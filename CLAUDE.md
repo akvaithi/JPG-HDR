@@ -196,6 +196,20 @@ test fails, suspect the change before the test.
   payload present it never reaches the XMP. `scripts/validate.py` now
   distinguishes the two syntaxes rather than accepting either.
 
+* **iMessage rebuilds the file from Apple's own gain map description, not the
+  standard one.** It re-encodes, discards every ISO 21496-1 segment, and keeps
+  what it recognises — so a standards-perfect file arrives as a single flat SDR
+  image. `--apple-compatible` adds an `apdi`/`HDRToneMap` rdf:Description beside
+  the hdrgm one, which fixes it: sent both ways, 2.3001 EV and 9.5% of the frame
+  above SDR white on arrival against 0.00 EV and 0.0% without. Two things are
+  load-bearing. The gain map must be *genuinely* single channel — a three
+  channel map declaring `StoredFormat` L008 was sent and arrived flattened, so
+  the flag forces mono rather than relabelling. And the APP10 `AROT` curve is
+  not the signal: grafting it on changed nothing, and ImageIO writes a
+  byte-identical blob regardless of the image. The cost is the per-channel
+  highlight correction: 0.25 EV in saturated highlights, 0.61 EV of hue drift,
+  on ~10% of the reference frame. Everything else is untouched.
+
 * **A JPEG gain map cannot survive re-encoding, and that is structural.** The
   map is a second image after the primary's EOI, so anything that decodes and
   re-encodes the primary keeps the SDR base and nothing else — iMessage among

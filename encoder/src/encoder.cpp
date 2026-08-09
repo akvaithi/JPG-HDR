@@ -37,7 +37,9 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
   po.pqDiffuseWhiteNits = opt.pqDiffuseWhiteNits;
   po.targetHeadroom = opt.targetHeadroom;
   po.gainMapSubsample = opt.gainMapSubsample;
-  po.multiChannelGainMap = opt.multiChannelGainMap;
+  // Apple's pipeline only accepts a genuinely single channel gain map, so this
+  // decides the channel count rather than sitting beside it.
+  po.multiChannelGainMap = opt.multiChannelGainMap && !opt.appleCompatible;
   po.gainMapGamma = opt.gainMapGamma;
   po.offsetSdr = opt.offsetSdr;
   po.offsetHdr = opt.offsetHdr;
@@ -76,7 +78,8 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
        px.minBoostLog2[0], px.maxBoostLog2[0]);
 
   GainMapMetadata meta;
-  meta.multiChannel = opt.multiChannelGainMap;
+  meta.multiChannel = opt.multiChannelGainMap && !opt.appleCompatible;
+  meta.appleGainMap = opt.appleCompatible;
   meta.useBaseColorSpace = true;
   meta.baseHeadroom = 0.0f;
   // The headroom the image actually needs, not the user's ceiling. A decoder

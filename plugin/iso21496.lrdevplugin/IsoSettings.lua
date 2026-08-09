@@ -26,6 +26,21 @@ IsoSettings.defaults = {
 	-- the render had; above that is a deliberate boost, and 1.25 is what puts
 	-- more tonal separation in the base than a plain SDR export carries.
 	iso_sdr_detail = 1.25,
+
+	-- Whether the photo has to survive being sent over iMessage. That pipeline
+	-- re-encodes the file, discards every ISO 21496-1 segment and rebuilds it
+	-- from what it recognises, so a standards-only file arrives as a flat SDR
+	-- image no matter how correct it is. Adding Apple's own description of the
+	-- gain map fixes it — verified by sending both: 2.3001 EV and 9.5% of the
+	-- frame above SDR white on arrival, against 0.00 EV without.
+	--
+	-- It is a question rather than a default because it costs something real.
+	-- Apple only accepts a single channel gain map, so the per-channel highlight
+	-- correction goes: 0.25 EV in saturated highlights and 0.61 EV of hue drift,
+	-- on about a tenth of a frame with warm speculars. Everything else — the SDR
+	-- base, the headroom, shadows and midtones — is untouched.
+	iso_apple_compatible = false,
+
 	-- Declared as the *old* generation on purpose. Lightroom fills any preset
 	-- field a stored preset is missing with the value declared here, so
 	-- declaring the current generation would stamp every old preset as current
@@ -212,6 +227,9 @@ function IsoSettings.buildArguments(properties)
 	args[#args + 1] = '--sdr-detail'
 	args[#args + 1] = string.format('%.2f', clampNumber(p.iso_sdr_detail, 0, 2, 1.25))
 
+	if p.iso_apple_compatible == true then
+		args[#args + 1] = '--apple-compatible'
+	end
 	if p.iso_copy_metadata == false then
 		args[#args + 1] = '--no-exif'
 	end
@@ -247,10 +265,16 @@ function IsoSettings.summary(properties)
 	local headroom = p.iso_target_headroom == 'match'
 		and LOC '$$$/Iso21496/SummaryMatch=headroom from the render'
 		or string.format('max +%s EV', tostring(p.iso_target_headroom))
-	return string.format('%s / depth %.2f / %s / q%d', headroom,
+	-- Worth surfacing in the collapsed header: it is the one setting here that
+	-- changes the gain map itself rather than the base image.
+	local shareable = p.iso_apple_compatible == true
+		and LOC '$$$/Iso21496/SummaryApple= / iMessage-safe'
+		or ''
+	return string.format('%s / depth %.2f / %s / q%d%s', headroom,
 		clampNumber(p.iso_sdr_detail, 0, 2, 1.25),
 		tostring(p.iso_color_space),
-		math.floor(tonumber(p.iso_jpeg_quality) or 90))
+		math.floor(tonumber(p.iso_jpeg_quality) or 90),
+		shareable)
 end
 
 return IsoSettings

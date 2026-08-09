@@ -101,6 +101,14 @@ local function testArguments()
 		check(not args:find(flag), 'the plug-in does not pass ' .. flag:gsub('%%', ''))
 	end
 
+	-- iMessage compatibility is off unless asked for: it costs the per-channel
+	-- gain map, so it must never arrive by default.
+	check(not args:find('--apple%-compatible'), 'iMessage compatibility is opt in')
+	local shareable = join(IsoSettings.buildArguments { iso_apple_compatible = true })
+	check(shareable:find('--apple%-compatible'), 'the checkbox reaches the encoder')
+	check(IsoSettings.summary({ iso_apple_compatible = true }):find('iMessage'),
+		'the collapsed header says the gain map changed')
+
 	-- The depth amount is clamped to what the encoder accepts.
 	local deep = join(IsoSettings.buildArguments { iso_sdr_detail = 99 })
 	check(deep:find('--sdr%-detail 2%.00'), 'the depth amount is clamped to 2')
