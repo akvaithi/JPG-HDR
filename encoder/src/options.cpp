@@ -58,7 +58,7 @@ const char kUsage[] =
     "                           local preserves highlight separation; the\n"
     "                           others are curves, and a curve cannot.\n"
     "  --highlight-knee <v>     Where the per-channel shoulder on the written\n"
-    "                           SDR value starts (default 0.85). The detail\n"
+    "                           SDR value starts (default 0.75). The detail\n"
     "                           layer is added over the compressed base without\n"
     "                           a ceiling, so without this the composite is hard\n"
     "                           clipped and highlights collapse to flat white.\n"

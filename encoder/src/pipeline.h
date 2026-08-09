@@ -57,9 +57,13 @@ struct PipelineOptions {
   // from the headroom". More negative compresses more of the picture, which is
   // what makes room for the detail layer to read as depth.
   float sdrKnee = 0.0f;
-  // Where the per-channel shoulder on the written SDR value starts. 1.0
-  // disables it and restores the hard clip.
-  float sdrHighlightKnee = 0.85f;
+  // Where the shoulder on the composite SDR value starts. 1.0 disables it and
+  // restores the hard clip. Swept across the six-frame reference set against
+  // Lightroom's own export of the same renders: 0.75 cuts single-channel
+  // clipping about tenfold against 0.85 — 6.68% to 0.40% on the worst frame,
+  // where Lightroom leaves 3.57% — for 0.6% of mean luminance. Going on to 0.65
+  // buys another 0.4 points of clipping and costs twice as much brightness.
+  float sdrHighlightKnee = 0.75f;
   // Guided-filter edge threshold, in stops squared. Larger smooths through more
   // texture, leaving more of it in the detail layer to be handed back.
   float sdrEdge = 4.0f;
