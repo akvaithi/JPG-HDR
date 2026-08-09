@@ -63,11 +63,6 @@ const char kUsage[] =
     "                           a ceiling, so without this the composite is hard\n"
     "                           clipped and highlights collapse to flat white.\n"
     "                           1.0 restores that clip.\n"
-    "  --local-shoulder <0-1>   Let the highlight shoulder follow the local base\n"
-    "                           layer instead of one threshold for the frame, so\n"
-    "                           a large bright area rolls off while a specular\n"
-    "                           on a dark ground keeps its punch (default 0,\n"
-    "                           off). Local tone mapping only.\n"
     "  --sdr-detail <x>         Local tone mapping only: how much of the detail\n"
     "                           layer is put back over the compressed base\n"
     "                           (default 1.0 = in full, 0 = a plain shoulder).\n"
@@ -176,11 +171,6 @@ bool parseArguments(int argc, char** argv, EncoderOptions* out, bool* handled) {
       out->sdrHighlightKnee = toFloat(v, "--highlight-knee");
       if (!(out->sdrHighlightKnee > 0.0f) || out->sdrHighlightKnee > 1.0f)
         fail("--highlight-knee must be above 0 and at most 1");
-    } else if (a == "--local-shoulder") {
-      needValue(argc, argv, i++, "--local-shoulder", &v);
-      out->sdrLocalShoulder = toFloat(v, "--local-shoulder");
-      if (out->sdrLocalShoulder < 0.0f || out->sdrLocalShoulder > 1.0f)
-        fail("--local-shoulder must be between 0 and 1");
     } else if (a == "--apple-compatible") {
       out->appleCompatible = true;
     } else if (a == "--quality" || a == "-q") {

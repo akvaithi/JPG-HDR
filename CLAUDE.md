@@ -196,6 +196,24 @@ test fails, suspect the change before the test.
   payload present it never reaches the XMP. `scripts/validate.py` now
   distinguishes the two syntaxes rather than accepting either.
 
+* **A highlight shoulder driven by the local base layer was tried and
+  rejected.** The reasoning was sound and the mechanism worked: take the knee
+  from the guided filter's base layer so a large bright area rolls off while a
+  specular on a dark ground keeps its punch. Measured across sixteen scenes it
+  did exactly that, with a selectivity of 1.75 to 5.04, median 2.59, and at
+  matched whole-frame brightness it beat any global knee — 2.4 : 1 against
+  1.4 : 1 on the frame it was designed for.
+
+  It was rejected on sight, universally, on all sixteen. The reason is what the
+  base layer actually identifies: not "blown highlight" but "large and bright",
+  which in a portrait or a group photograph is the *backdrop*. So it darkened
+  backgrounds and left faces lit, which reads as a subject cut out from its
+  scene. A measurement that says "large bright areas rolled off harder" and a
+  photograph that says "the background went muddy" are the same fact.
+
+  Do not rebuild it without a different signal. Anything keyed on local
+  brightness will find the backdrop again.
+
 * **Check the phone's power saving mode before believing an Android result.**
   Samsung suppresses HDR rendering in power save, which looks exactly like a
   file the device cannot read: recognised, listed as Ultra HDR, rendered flat.

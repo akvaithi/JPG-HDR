@@ -81,11 +81,6 @@ struct EncoderOptions {
   // frames. A shoulder driven by the local base layer could act on that; one
   // number chosen per image cannot, however it is chosen.
   float sdrHighlightKnee = 0.80f;
-  // How much the highlight shoulder follows the local base layer rather than a
-  // single threshold for the whole frame. 0 is the global behaviour and is the
-  // default; 1 starts the shoulder a full stop earlier where the surroundings
-  // are already near white.
-  float sdrLocalShoulder = 0.0f;
   float sdrEdge = 4.0f;
   bool autoMaxBoost = true;
   PeakDetect peakDetect = PeakDetect::Softened;
