@@ -253,8 +253,18 @@ def validate(path, r):
         h = struct.unpack(">H", data[sof[1] + 1:sof[1] + 3])[0]
         w = struct.unpack(">H", data[sof[1] + 3:sof[1] + 5])[0]
         r.check(comps in (1, 3), "the gain map is 1 or 3 channel", f"{comps} channel, {w}x{h}")
-        r.check(comps == 3, "the gain map is three channel", required=False,
-                detail="one gain cannot follow a highlight that changes hue")
+        # Three channels carry saturated highlights better, but Apple's stack
+        # only accepts a genuinely single channel map, so a file built for
+        # iMessage is meant to be mono and should not be nagged about it.
+        apple = b"urn:com:apple:photo:2020:aux:hdrgainmap" in data[primary_end:gend]
+        if not apple:
+            r.check(comps == 3, "the gain map is three channel", required=False,
+                    detail="one gain cannot follow a highlight that changes hue")
+        else:
+            r.check(comps == 1, "the gain map is single channel, as the Apple "
+                    "block requires", detail="costs 0.25 EV in saturated "
+                    "highlights against a three channel map; a 3-channel map "
+                    "declaring L008 arrives flattened")
 
     # -------------------------------------------------------------- ISO payload
     r.section("ISO 21496-1", "Apple: Photos, Preview, Safari, iMessage previews")

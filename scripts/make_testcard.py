@@ -29,6 +29,13 @@ FONT = {
  'E': ["#####","#    ","#    ","#### ","#    ","#    ","#####"],
  'W': ["#   #","#   #","#   #","# # #","# # #","## ##","#   #"],
  'I': ["#####","  #  ","  #  ","  #  ","  #  ","  #  ","#####"],
+ # J, K and Q were missing, and an unknown character renders as a blank rather
+ # than raising. Two cards labelled "J0 control" and "K0 control" therefore came
+ # out byte-identical, Photos deduplicated them into one asset, and a send round
+ # lost a control. If you add a glyph-less character here, add the glyph.
+ 'J': ["    #","    #","    #","    #","#   #","#   #"," ### "],
+ 'K': ["#   #","#  # ","# #  ","##   ","# #  ","#  # ","#   #"],
+ 'Q': [" ### ","#   #","#   #","#   #","# # #","#  # "," ## #"],
  'T': ["#####","  #  ","  #  ","  #  ","  #  ","  #  ","  #  "],
  'F': ["#####","#    ","#    ","#### ","#    ","#    ","#    "],
  'A': [" ### ","#   #","#   #","#####","#   #","#   #","#   #"],
