@@ -62,6 +62,10 @@ endif()
 # The HEIC repackager. macOS only, and deliberately a second program: it needs
 # an HEVC encoder, which means ImageIO, and the whole point of the encoder above
 # is that it has no dependencies on any platform.
+#
+# Built but not shipped, and parked rather than pending — it is kept as the
+# fallback if Apple ever breaks the JPEG path again. See CLAUDE.md for why it
+# is not an export option.
 if(APPLE)
   enable_language(OBJC)
   add_executable(iso21496_heic src/heic_tool.m)

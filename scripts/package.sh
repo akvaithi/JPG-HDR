@@ -14,9 +14,10 @@ dist="$repo_root/dist"
 mac_binary=""
 win_binary=""
 allow_missing=0
-# The HEIC repackager is opt in. It is macOS only, so shipping it by default
-# would put a binary in the bundle that most of the plug-in cannot use, and the
-# export dialog does not offer it yet.
+# The HEIC repackager is opt in, and parked rather than pending. It existed
+# because HEIC was the only container that survived an iMessage send; the AMPF
+# marker fixed the JPEG, so what it would add now is an Apple-only output from a
+# plug-in built to produce one file that works everywhere. See CLAUDE.md.
 with_heic=0
 
 while [ $# -gt 0 ]; do

@@ -348,6 +348,28 @@ test fails, suspect the change before the test.
   read what is in it. They are different questions and answering one does not
   answer the other.
 
+* **HEIC output is parked, deliberately, and the reason is the point of the
+  project.** `iso21496_heic` builds on macOS and `scripts/to_heic.swift`
+  repackages a file by hand; neither is wired into the export dialog and
+  `scripts/package.sh` ships the binary only with `--with-heic`. Leave it that
+  way.
+
+  HEIC existed here for exactly one reason: it was the only container that
+  survived an iMessage send. `AMPF` removed that reason — the JPEG survives now,
+  measured, in both directions. What HEIC would add in its place is an
+  Apple-only output from a plug-in whose whole purpose is one file that works
+  everywhere. Android, Google Photos and Chrome read the gain map JPEG; they do
+  not read this. Shipping both would mean asking the photographer which of their
+  viewers matter, which is the question this project exists to make unnecessary.
+
+  It also costs quality: every Apple-container route is single channel, 0.23 EV
+  in the highlights and 0.57 EV of hue drift against the three-channel JPEG,
+  because ImageIO's writer segfaults inside VideoToolbox on a `444f` auxiliary.
+
+  Keep the code — it is measured, it works, and it is the fallback if Apple ever
+  breaks the JPEG path again. Do not promote it to a shipping option without a
+  reason as concrete as the one that has just gone away.
+
 * **A three-channel gain map only fits in a JPEG, and only because we write
   the JPEG ourselves.** Handed a `444f` map, ImageIO's writer segfaults inside
   VideoToolbox (`vt_Copy_444v_Crop`) for HEIC *and* AVIF — it is the auxiliary
