@@ -138,8 +138,22 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
     jo.optimizeHuffman = opt.optimizeHuffman;
     jo.threads = opt.threads;
 
-    jo.appSegments.push_back(buildJfifAppSegment());
+    // AMPF: this image has a second one after it. Only the primary carries it —
+    // the gain map image is not a multi-picture container.
+    jo.appSegments.push_back(buildJfifAppSegment(/*appleMultiPicture=*/true));
     if (!exifSegment.empty()) jo.appSegments.push_back(std::move(exifSegment));
+    // MPF goes immediately after the Exif APP1, which is where CIPA DC-007
+    // says the MP Index belongs and where both an iPhone camera JPEG and
+    // ImageIO's own writer put it. We wrote it last for every release up to
+    // this one.
+    //
+    // This is correctness, not a fix: it was moved on the theory that its
+    // position was why iMessage flattened our files 27 -> 26, and a card built
+    // with it here was sent and lost anyway. That was the AMPF marker above.
+    // Keep the placement; do not cite it as the iMessage fix.
+    //
+    // Its contents are patched once both images are sized.
+    jo.appSegments.push_back(buildMpfSegmentPlaceholder());
     jo.appSegments.push_back(buildIsoBaseImageSegment());
     if (opt.writeXmp)
       jo.appSegments.push_back(
@@ -150,9 +164,6 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
       for (auto& seg : buildIccAppSegments(profile))
         jo.appSegments.push_back(std::move(seg));
     }
-    // MPF must be the last APP segment we add, but its contents are patched
-    // once both images are sized.
-    jo.appSegments.push_back(buildMpfSegmentPlaceholder());
 
     JpegImage img;
     img.width = px.width;

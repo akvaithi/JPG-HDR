@@ -137,6 +137,19 @@ void appleGainMapBlock() {
   // The standard block is still there for everyone who is not Apple.
   CHECK(xmp.find("hdrgm:Version=\"1.0\"") != std::string::npos);
 
+  // The 2020 format's own description, which the aux type above promises. It
+  // was missing while the type claimed it, so a reader that trusted the type
+  // and looked here found nothing — and the ISO payload it would otherwise
+  // have fallen back on is exactly what an iMessage send removes.
+  CHECK(xmp.find("http://ns.apple.com/HDRGainMap/1.0/") != std::string::npos);
+  CHECK(xmp.find("<HDRGainMap:HDRGainMapVersion>131072") != std::string::npos);
+  // Linear, where HDRToneMap:AlternateHeadroom beside it is log2. An iPhone 17
+  // writes 4.560482 for a map ImageIO reports at a 4.5605 content headroom, so
+  // the field is the multiplier itself; 2.3 stops is 4.92458x. Writing 2.3 here
+  // would understate the headroom by more than a stop.
+  CHECK(xmp.find("<HDRGainMap:HDRGainMapHeadroom>4.92458<") != std::string::npos);
+  CHECK(xmp.find("<HDRToneMap:AlternateHeadroom>2.3") != std::string::npos);
+
   // Off by default: the cost is a single channel gain map, and nothing should
   // pay it unless it was asked for.
   GainMapMetadata plain;

@@ -358,7 +358,7 @@ Bytes buildXmpAppSegment(const std::string& xmp) {
   return makeSegment(0xe1, payload);
 }
 
-Bytes buildJfifAppSegment() {
+Bytes buildJfifAppSegment(bool appleMultiPicture) {
   Bytes payload;
   putString(payload, "JFIF");
   payload.push_back(0);
@@ -369,6 +369,20 @@ Bytes buildJfifAppSegment() {
   putU16BE(payload, 1);   // y density
   payload.push_back(0);   // thumbnail width
   payload.push_back(0);   // thumbnail height
+  // "AMPF" — Apple Multi-Picture Format — four bytes past the end of the
+  // standard JFIF fields, which every Apple producer appends to a JPEG that
+  // carries a second image and no one else writes at all.
+  //
+  // This is the flag Apple's share path reads to decide a file has more than
+  // one picture in it. Without it, sending 27 -> 26 delivered a single flat SDR
+  // image every time: the second image, the MPF index and the ICC profile all
+  // dropped, 3.0000 EV in and 0.0000 EV out. Eight rounds of real sends went
+  // past it — MPF placement and type codes, the gain map's XMP, Apple's
+  // MakerNote, the gain map image's ICC, chroma subsampling, Huffman tables —
+  // and none of them mattered, because none of them is what Apple looks at.
+  // An iPhone camera JPEG, ImageIO's own writer and every file that survived
+  // have these four bytes; every file that was flattened lacked them.
+  if (appleMultiPicture) putString(payload, "AMPF");
   return makeSegment(0xe0, payload);
 }
 

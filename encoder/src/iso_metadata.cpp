@@ -279,11 +279,28 @@ std::string seqIfPerChannel(const char* name, const float (&v)[3],
 constexpr uint32_t kPixelFormatL008 = 0x4C303038;  // 'L008'
 constexpr uint32_t kPixelFormat444f = 0x34343466;  // '444f'
 
+// The other Apple convention for describing the same map. An iPhone 17 camera
+// JPEG writes these two fields beside the three apdi ones and no HDRToneMap at
+// all; ImageIO's own JPEG writer does the reverse — HDRToneMap exactly as
+// below, no HDRGainMap. Both are Apple, both name the same 2020 aux type, and
+// they disagree, so writing both covers whichever a given reader looks for.
+//
+// This was added on the theory that its absence was why iMessage flattened our
+// files. It is not: a card carrying it and one without it were sent 27 -> 26
+// together and both arrived at 0.00 EV. It stays because it is free — 0.0000 EV
+// median and max drift through ImageIO's HDR decode against the same file
+// without it — and because matching the camera costs nothing. Do not cite it
+// as an iMessage fix.
+//
+// 0x20000 is what the camera writes; exiftool renders it "0.2.0.0".
+constexpr uint32_t kAppleGainMapVersion = 0x20000;
+
 std::string buildAppleGainMapBlock(const GainMapMetadata& m) {
   const int channels = m.multiChannel ? 3 : 1;
   std::ostringstream os;
   os << "<rdf:Description rdf:about=\"\""
      << " xmlns:apdi=\"http://ns.apple.com/pixeldatainfo/1.0/\""
+     << " xmlns:HDRGainMap=\"http://ns.apple.com/HDRGainMap/1.0/\""
      << " xmlns:HDRToneMap=\"http://ns.apple.com/HDRToneMap/1.0/\">"
      << "<apdi:AuxiliaryImageType>"
      << "urn:com:apple:photo:2020:aux:hdrgainmap"
@@ -294,6 +311,13 @@ std::string buildAppleGainMapBlock(const GainMapMetadata& m) {
      << "<apdi:StoredFormat>"
      << (m.multiChannel ? kPixelFormat444f : kPixelFormatL008)
      << "</apdi:StoredFormat>"
+     << "<HDRGainMap:HDRGainMapVersion>" << kAppleGainMapVersion
+     << "</HDRGainMap:HDRGainMapVersion>"
+     // Linear, not log2: the camera writes 4.560482 where ImageIO reports a
+     // content headroom of 4.5605, i.e. the multiplier itself.
+     << "<HDRGainMap:HDRGainMapHeadroom>"
+     << fmt(std::exp2(m.alternateHeadroom))
+     << "</HDRGainMap:HDRGainMapHeadroom>"
      << "<HDRToneMap:AlternateHeadroom>" << fmt(m.alternateHeadroom)
      << "</HDRToneMap:AlternateHeadroom>"
      << "<HDRToneMap:ChannelMetadata><rdf:Seq>";

@@ -117,7 +117,16 @@ test fails, suspect the change before the test.
    states the gain map's byte length, so it cannot be built first.
 
 8. **MPF offsets are patched after both images exist**, and are measured from
-   the first byte of the MP Endian field, not from the start of the file.
+   the first byte of the MP Endian field, not from the start of the file. The
+   segment itself goes **immediately after the Exif APP1**, before the ISO
+   marker, the XMP and the ICC profile — where CIPA DC-007 says the MP Index
+   belongs, and where both an iPhone camera JPEG and ImageIO's own writer put
+   it. We wrote it last until this release. `test_endtoend` asserts it.
+
+   That is correctness only. It was moved on the theory that its position was
+   why iMessage flattened our files 27 → 26, and **a card built with it here was
+   sent and lost anyway**. The cause was the `AMPF` marker in the JFIF APP0 —
+   see the gotchas. Keep the placement; do not credit it with the fix.
 
 9. **The gain map is stored as `pow(norm, gamma)`, and decoders read it back
    as `pow(stored, 1/gamma)`** — Ultra HDR and ISO 21496-1 agree. This was
@@ -236,18 +245,108 @@ test fails, suspect the change before the test.
   highlight correction: 0.25 EV in saturated highlights, 0.61 EV of hue drift,
   on ~10% of the reference frame. Everything else is untouched.
 
-* **A JPEG gain map cannot survive re-encoding, and that is structural.** The
-  map is a second image after the primary's EOI, so anything that decodes and
-  re-encodes the primary keeps the SDR base and nothing else — iMessage among
-  them. It is not stripping metadata; the HDR is simply not in the part it
-  re-encodes. HEIC carries the map as an item inside the container and comes
-  through intact (2.3001 EV before and after, same as an iPhone's own file);
-  `scripts/to_heic.swift` repackages one. Note that ImageIO will not hand back
-  the gain map's pixels from a JPEG source — the auxiliary dictionary has the
-  description and metadata but no `kCGImageAuxiliaryDataInfoData` — so the map
-  has to be decoded from the second image and supplied as a planar buffer. An
-  earlier version of that script missed this and concluded, wrongly, that HEIC
-  could not carry a gain map at all.
+* **`AMPF` in the JFIF APP0 is what tells Apple a JPEG has a second image.**
+  Four bytes appended past the standard JFIF fields — Apple Multi-Picture
+  Format. Every Apple producer writes it on a multi-picture JPEG and nobody
+  else writes it at all:
+
+      ours    4a46494600010100000100010000
+      Apple   4a46494600010101012c012c0000 414d5046
+
+  Without it, sending 27 → 26 delivered a flat SDR image every time: 3.0000 EV
+  in, 0.0000 EV out, second image and MPF index and ICC profile all gone. The
+  correlation is perfect across every file measured — iPhone camera JPEG,
+  the same file after sending, three ImageIO-written files: all have it, all
+  survived; every file this encoder wrote lacked it and every one was
+  flattened.
+
+  Only the primary gets it. The gain map image is not a multi-picture container
+  and no Apple file marks it as one; `test_endtoend` asserts both halves.
+  A non-standard APP0 length does not upset libultrahdr or exiftool — checked,
+  not assumed, because Android reads this file too.
+
+  It cost eight rounds of real sends to find, and the reason is worth keeping:
+  every round compared segment *lengths* and segment *contents for the segments
+  that looked interesting*. APP0 was 16 bytes against 20 and that reads like
+  padding. Dump the bytes of every segment that differs at all, including the
+  boring ones.
+
+  Ruled out along the way, each by a real send — useful because they are the
+  obvious suspects and they are all innocent:
+
+  * the gain map's XMP — two cards differing only in `HDRGainMap:*` both lost;
+  * Apple's MakerNote, `HDRHeadroom` and `HDRGain`, with Make/Model/Software
+    reading as an iPhone;
+  * Apple's own MPF type codes — gain map `0x000000`, no Representative flag;
+  * the MPF segment's position, moved to immediately after Exif where CIPA
+    DC-007 and both Apple producers put it. Kept for correctness, but the card
+    built with it there was lost too.
+
+  * the XMP APP1 on the primary (GContainer + hdrgm), which no survivor
+    carries — added to a survivor, it survived anyway;
+  * the missing ICC profile on the gain map image, which every survivor has and
+    none of ours do — removed from a survivor, it survived anyway.
+
+  Those last two were perfectly confounded across six files until a round built
+  the other way round: take the file that *survives*, change one thing, and
+  send a known-casualty control alongside. Both fell in one round.
+
+  Then splice the file in half at the primary's EOI and swap the halves —
+  `scratchpad/splice.py`. Apple's primary carrying **our** gain map image
+  survived; **our** primary carrying Apple's gain map image was lost. So the
+  gain map image is not involved at all and the fault is in the primary, and it
+  is not metadata. Diffing the two primaries segment by segment, with the XMP
+  already cleared, what is left is: `SOF0` 4:4:4 against ImageIO's 4:2:0,
+  optimised Huffman tables against standard, no `DRI` against restart
+  intervals, and small `JFIF`/`DQT`/Exif differences. The ICC and the ISO APP2
+  are byte-identical.
+
+  Chroma subsampling looked like the favourite — Apple's stack has a known
+  4:4:4 failure in this area, ImageIO's own writer segfaults inside
+  VideoToolbox on a `444f` gain map — and it was wrong. `--chroma-subsample`
+  and `--no-optimize` were both sent and both lost. The answer was `AMPF`,
+  above.
+
+  Two methodological lessons, five sends between them. Variants that change
+  what is *in* the segments while leaving the layout alone cannot distinguish
+  layout hypotheses, and a marker dump comparing survivor to casualty is one
+  command. And **every card in a batch needs different pixels**: three variants
+  built by byte surgery on one encode — the right way to isolate a variable —
+  were deduplicated by Photos into a single asset, came back byte-identical
+  with the same `IMG_` number, and voided the round. Distinct assets get
+  distinct `IMG_` numbers, which is how to tell. Send a known-casualty control
+  alongside, too, or a round where everything survives cannot be told from a
+  round that did not happen.
+
+* **A JPEG gain map survives re-encoding when the re-encoder chooses to carry
+  it.** This entry used to say the opposite — that the map is a second image
+  after the primary's EOI, so re-encoding the primary structurally cannot keep
+  it. That is wrong, and an iPhone 17 camera JPEG through iMessage disproves
+  it: primary 3,683,912 → 3,667,000 bytes, so plainly re-encoded, and it
+  arrived with its gain map at 2.1892 EV, its MPF index, its ICC profile and
+  its APP10 `AROT` curve. What it lost was the ISO 21496-1 payload.
+
+  The same send flattens our files completely — every APP2 gone, ICC included,
+  new Huffman and quantisation tables, restart intervals we never wrote, an
+  added thumbnail. So there are two paths, and the question is what puts a file
+  on the good one. Not the gain map's XMP: files differing only there both died.
+
+  It is not a capability limit either. ImageIO *will* hand back the gain map's
+  pixels from a JPEG source, ours as readily as Apple's — 480,000 bytes via
+  `kCGImageAuxiliaryDataInfoData` — which this entry also used to deny.
+  (`scripts/to_heic.swift` decodes the second image by hand anyway; that is
+  belt and braces now, not a necessity.) A transcoder has everything it needs
+  to re-attach our map and does not.
+
+  HEIC carries the map as an item inside the container and comes through intact
+  (2.3001 EV before and after, same as an iPhone's own file);
+  `scripts/to_heic.swift` repackages one. An earlier version of that script
+  concluded, wrongly, that HEIC could not carry a gain map at all.
+
+  Two measurements are worth keeping because they are cheap to redo and both
+  have already misled: whether a container survives, and whether ImageIO can
+  read what is in it. They are different questions and answering one does not
+  answer the other.
 
 * **A three-channel gain map only fits in a JPEG, and only because we write
   the JPEG ourselves.** Handed a `444f` map, ImageIO's writer segfaults inside
@@ -262,11 +361,51 @@ test fails, suspect the change before the test.
   21496-1 (`kCGImageAuxiliaryDataTypeISOGainMap`) is the interoperable one; the
   older Apple format (`kCGImageAuxiliaryDataTypeHDRGainMap`,
   `urn:com:apple:photo:2020:aux:hdrgainmap`) is what an iPhone's own photos
-  carry *alongside* it. In a JPEG the Apple form appears as an APP10 `AROT`
-  gain curve with no ISO payload at all; in a HEIC as an `XMP-HDRGainMap` block.
-  Reports of iMessage working hinge on the Apple form specifically, so a file
-  carrying only the ISO one is not evidence that Apple's stack will handle it
-  everywhere.
+  carry *alongside* it — an iPhone 17 camera JPEG has both, plus an APP10
+  `AROT` curve, on the primary *and* on the gain map image. Reports of iMessage
+  working hinge on the Apple form specifically, so a file carrying only the ISO
+  one is not evidence that Apple's stack will handle it everywhere.
+
+* **Apple has two conventions for describing the same gain map, and both are
+  Apple's.** An iPhone 17 camera JPEG writes the three `apdi` fields and then
+  the 2020 schema's own two:
+
+      HDRGainMap:HDRGainMapVersion    131072      (0x20000; exiftool: "0.2.0.0")
+      HDRGainMap:HDRGainMapHeadroom   4.560482    linear, not log2
+
+  `HDRGainMapHeadroom` is the multiplier itself: the camera writes 4.560482 for
+  a map ImageIO reports at a 4.5605 content headroom. `HDRToneMap:Alternate‑
+  Headroom` beside it is in stops, so the two fields carry the same fact in
+  different units and writing one into the other understates it by a stop or
+  more.
+
+  ImageIO's own JPEG writer does the opposite: `HDRToneMap` exactly as this
+  encoder writes it, with no `HDRGainMap` fields at all. Check with
+  `scripts/to_apple_jpeg.swift`, which rewrites one of our files through
+  ImageIO. So neither schema is "the" Apple form and our file was never
+  inconsistent for using `HDRToneMap` — an earlier note here said it was, on the
+  strength of the camera file alone, before checking what Apple's own writer
+  emits.
+
+  We now write both. It is free — 0.0000 EV median *and* max drift through
+  ImageIO's HDR decode against the same file without them — but it is **not**
+  an iMessage fix, which is what it was added for. Two cards differing only in
+  these fields were sent 27 → 26 together and both arrived at 0.00 EV.
+
+  Do not conclude from a local ImageIO probe that a file is iMessage-safe.
+  ImageIO reports "Apple HDR gain map: FOUND" for files with only the
+  `HDRToneMap` description, and still does with every ISO APP2 segment stripped
+  out — it reconstructs the view from the Adobe `hdrgm` XMP. The transcoder is
+  stricter than the reader, so the probe cannot tell the two apart and only a
+  real send can.
+
+* **What ImageIO's JPEG writer lays out, when you want a reference file.**
+  `JFIF, Exif, MPF, ISO APP2, ICC` on the primary — MPF *before* the ISO marker
+  and the profile — restart intervals, no XMP on the primary at all (so no
+  GContainer), and the gain map image typed `0x000000` (Undefined) in MPF
+  rather than `0x050000`. The camera types it `0x000000` too. We write
+  `0x050000`, which is what MPF asks for and what a reader trusting the index
+  needs; Apple evidently never reads it.
 
 * **Never combine "match the render" with `--no-auto-max-boost`.** With no cap
   to fall back on, the encoder would declare its 10-stop maximum as the photo's

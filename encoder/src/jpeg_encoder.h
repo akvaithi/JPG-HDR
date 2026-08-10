@@ -35,7 +35,9 @@ Bytes encodeJpeg(const JpegImage& image, const JpegOptions& options);
 std::vector<Bytes> buildIccAppSegments(const Bytes& profile);
 // Builds an APP1 segment holding an XMP packet.
 Bytes buildXmpAppSegment(const std::string& xmp);
-// Builds the JFIF APP0 segment.
-Bytes buildJfifAppSegment();
+// Builds the JFIF APP0 segment. With `appleMultiPicture`, appends the four
+// bytes "AMPF" past the standard fields — Apple's marker for a JPEG carrying a
+// second image, and what its share path reads to decide the file has one.
+Bytes buildJfifAppSegment(bool appleMultiPicture = false);
 
 }  // namespace iso21496

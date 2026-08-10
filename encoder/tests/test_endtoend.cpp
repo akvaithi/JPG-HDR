@@ -28,12 +28,16 @@ struct Parsed {
   bool hasIsoUrn = false;
   bool hasMpf = false;
   bool primaryIccPresent = false;
+  bool primaryAmpf = false, gainMapAmpf = false;
   int primaryComponents = 0;
   int gainComponents = 0;
   uint32_t primaryWidth = 0, primaryHeight = 0;
   uint32_t gainWidth = 0, gainHeight = 0;
   uint32_t mpfPrimarySize = 0, mpfSecondarySize = 0, mpfSecondaryOffset = 0;
   size_t mpfEndianOffset = 0;
+  // Index of the MPF segment among the primary's APP segments, and of the Exif
+  // APP1 before it. CIPA DC-007 requires MPF immediately after Exif.
+  int mpfSegmentIndex = -1, exifSegmentIndex = -1, appSegmentCount = 0;
   GainMapMetadata iso;
   bool isoMultiChannel = false;
 };
@@ -57,6 +61,20 @@ Parsed parseFile(const Bytes& file) {
       r.primaryWidth = readU16BE(&file[s.payloadOffset + 3]);
       r.primaryComponents = file[s.payloadOffset + 5];
     }
+    if (s.marker >= 0xe0 && s.marker <= 0xef) {
+      const uint8_t* q = &file[s.payloadOffset];
+      if (s.marker == 0xe0 && s.payloadSize >= 18 &&
+          std::memcmp(q, "JFIF\0", 5) == 0 &&
+          std::memcmp(q + 14, "AMPF", 4) == 0)
+        r.primaryAmpf = true;
+      if (s.marker == 0xe1 && s.payloadSize >= 5 &&
+          std::memcmp(q, "Exif\0", 5) == 0)
+        r.exifSegmentIndex = r.appSegmentCount;
+      if (s.marker == 0xe2 && s.payloadSize >= 4 &&
+          std::memcmp(q, "MPF\0", 4) == 0)
+        r.mpfSegmentIndex = r.appSegmentCount;
+      ++r.appSegmentCount;
+    }
     if (s.marker != 0xe2) continue;
     const uint8_t* p = &file[s.payloadOffset];
     if (s.payloadSize >= 12 && std::memcmp(p, "ICC_PROFILE", 12) == 0)
@@ -75,6 +93,10 @@ Parsed parseFile(const Bytes& file) {
   auto gain = walkJpeg(file, end, &gainEnd);
   CHECK(!gain.empty());
   for (const auto& s : gain) {
+    if (s.marker == 0xe0 && s.payloadSize >= 18 &&
+        std::memcmp(&file[s.payloadOffset], "JFIF\0", 5) == 0 &&
+        std::memcmp(&file[s.payloadOffset + 14], "AMPF", 4) == 0)
+      r.gainMapAmpf = true;
     if (s.marker == 0xc0) {
       r.gainHeight = readU16BE(&file[s.payloadOffset + 1]);
       r.gainWidth = readU16BE(&file[s.payloadOffset + 3]);
@@ -152,6 +174,26 @@ void fullExport() {
   CHECK_EQ(p.gainWidth, 100u);
   CHECK_EQ(p.gainHeight, 70u);
   CHECK(!p.isoMultiChannel);
+
+  // MPF goes immediately after the Exif APP1, which CIPA DC-007 requires and
+  // Apple's stack enforces. Written last instead — after the ISO marker, the
+  // XMP and the ICC profile — an iMessage send from iOS 27 to iOS 26 discarded
+  // the entire second image, the MPF index and the profile with it, on every
+  // variant tried. The same picture with MPF here survived at 3.0000 EV, as
+  // does an iPhone camera JPEG, which puts it in the same place.
+  CHECK(p.exifSegmentIndex >= 0);
+  CHECK_EQ(p.mpfSegmentIndex, p.exifSegmentIndex + 1);
+
+  // "AMPF" past the standard JFIF fields on the primary: Apple's marker for a
+  // JPEG that carries a second image, and the flag its share path reads to
+  // decide there is one. Without it, sending 27 -> 26 delivered a flat SDR
+  // image every time — 3.0000 EV in, 0.0000 EV out, second image and MPF index
+  // gone. Every Apple-produced file that survived that send has these four
+  // bytes and every file of ours that was flattened lacked them.
+  CHECK(p.primaryAmpf);
+  // Not on the gain map image: it is not a multi-picture container, and no
+  // Apple file marks it as one.
+  CHECK(!p.gainMapAmpf);
 
   // MPF must describe the file exactly as it was written.
   CHECK_EQ(p.mpfPrimarySize, static_cast<uint32_t>(report.primaryBytes));
