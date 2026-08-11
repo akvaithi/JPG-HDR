@@ -143,6 +143,49 @@ test fails, suspect the change before the test.
    rationals. This deviation is deliberate and documented — see
    [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#iso-21496-1-payload).
 
+## Export performance, measured
+
+The encoder is not the slow part and never was. On an 8-core machine, a 45MP
+16-bit intermediate (268 MB, what Lightroom actually hands over):
+
+    read file        0.11 s
+    pass 1 (measure) 0.36 s
+    rest of pipeline 0.66 s
+    gain map jpeg    0.06 s
+    primary jpeg     0.40 s
+                     ~1.6 s total
+
+`--verbose` prints these. The pipeline scales 4.4x from one thread to eight, so
+there is no idle hardware to reclaim; the remaining cost is Lightroom rendering
+and writing 268 MB per photo, which we do not control.
+
+What we do control is how fast those intermediates are consumed, because
+Lightroom renders on several threads and gets ahead. Throughput, six photos:
+
+    1 worker,  8 threads   0.64 photos/s
+    2 workers, 4 threads   0.81
+    3 workers, 3 threads   0.85
+    4 workers, 2 threads   0.76
+    3 workers, default     0.84
+
+So the export encodes three at a time. Threads per worker are deliberately not
+set: three-at-default matched three-at-three, and a fixed count would be wrong
+on any other machine.
+
+**Do not compress the intermediate.** It is the obvious idea and it is worse on
+both counts. Measured on a 45MP 16-bit frame, grainy content against smooth:
+
+    LZW, no predictor    119.3%   (larger than uncompressed)
+    LZW + predictor 2     99.2%  /  1.7%
+    ZIP + predictor 2     78.7%  /  0.3%
+
+Detailed photographs sit near the grainy end, so LZW buys nothing — and it
+costs: the same frame through our LZW path took 1.49 s in the pipeline against
+1.01 s uncompressed, +47%. Slowing the consumer is exactly wrong when the
+complaint is that intermediates pile up. ZIP would save around a fifth, but the
+reader has no Deflate and adding one would cost inflate time on the same
+critical path. The smooth-content column is synthetic gradients; ignore it.
+
 ## Gotchas that have already bitten
 
 * **Optimised Huffman tables.** The symbol list must be swept over the full
@@ -458,7 +501,20 @@ binary. It works on a *copy* of the bundle in a temp directory, because it
 pretends to be macOS and would otherwise leave a host binary in the macOS slot
 for `scripts/package.sh` to pick up.
 
-Syntax-check everything with `luac5.4 -p plugin/iso21496.lrdevplugin/*.lua`.
+`LrTasks.startAsyncTask` in the stub **queues** the function rather than running
+it. It used to run it on the spot, which is a poor model and hid a real bug: the
+export loop starts several encodes and names each output from what exists on
+disk, and under a synchronous stub each task had already written its file before
+the next was named, so the race could not happen and the test passed with the
+bug in it. Queued tasks run when something waits — `sleep` or `yield` — or on
+`stubs.drainTasks()`. Anything asserting on what a task produced has to drain
+first; `testDialogsBuildOutsideATask` does.
+
+Verify a new plug-in test by reintroducing the bug and watching it fail. Two
+tests in this file have passed against broken code.
+
+Syntax-check everything with `luac -p plugin/iso21496.lrdevplugin/*.lua`
+(Homebrew installs Lua 5.5 as plain `luac` now; `luac5.4` may not exist).
 
 ## Style
 

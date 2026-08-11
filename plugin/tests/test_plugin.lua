@@ -262,7 +262,10 @@ local function testDialogsBuildOutsideATask()
 		.. (infoBuilt and '' or ': ' .. tostring(infoErr)))
 
 	-- Building the sections starts tasks, which is where the encoder is allowed
-	-- to run; the values they were waiting on must actually have arrived.
+	-- to run. A started task has not necessarily finished — that is the whole
+	-- point of one — so drain them before asking what they produced.
+	stubs.drainTasks()
+	-- the values they were waiting on must actually have arrived.
 	check(properties.iso_encoder_version ~= nil and
 		properties.iso_encoder_version:match('^%d+%.%d+%.%d+$') ~= nil,
 		'the export dialog resolves the encoder version from a task ('
@@ -377,6 +380,113 @@ local function testEncoderFailureIsReported()
 		'the encoder error message reaches the caller (' .. tostring(err) .. ')')
 end
 
+-- The export loop, driven end to end against fake renditions.
+--
+-- It encodes on a pool of tasks rather than one photo at a time, which means
+-- output names are claimed before a worker starts and the loop has to drain
+-- what is still in flight when the renditions run out. Neither is visible from
+-- the outside until an export drops a photo or two workers write to the same
+-- file, so it is worth a test even though the concurrency itself is
+-- Lightroom's.
+local function testExportLoop()
+	local ExportServiceProvider = require 'ExportServiceProvider'
+	-- An export runs inside a task; an earlier test leaves this false.
+	stubs.inTask = true
+
+	local rendered, failed = {}, {}
+	local renditions = {}
+	local intermediates = {}
+
+	-- Three ordinary ones, then the collision. Lightroom hands out unique
+	-- intermediates, so two .jpg names can only clash after uniquifying: dup.jpg
+	-- already exists on disk, so dup.tif becomes dup-1.jpg — which is exactly
+	-- the name dup-1.tif derives for itself. Serially that is invisible, because
+	-- the first file exists by the time the second is named. On a pool it is a
+	-- lost photo.
+	local names = { 'pool_1', 'pool_2', 'pool_3', 'dup', 'dup-1' }
+	local existing = io.open(tmpDir .. '/dup.jpg', 'wb')
+	existing:write('an earlier export')
+	existing:close()
+
+	for i, name in ipairs(names) do
+		local path = tmpDir .. '/' .. name .. '.tif'
+		intermediates[i] = path
+		local f = io.open(path, 'wb')
+		f:write('not really a tiff')
+		f:close()
+		renditions[i] = {
+			photo = { getFormattedMetadata = function() return 'photo.dng' end },
+			waitForRender = function() return true, path end,
+			uploadFailed = function(_, reason) failed[#failed + 1] = reason end,
+		}
+	end
+
+	local captions = {}
+	local exportContext = {
+		exportSession = { countRenditions = function() return #renditions end },
+		-- Enough that intermediateProblems finds nothing and the loop is not
+		-- interrupted by a confirmation dialog.
+		propertyTable = { iso_workers = 3, iso_keep_intermediate = false,
+		                  iso_add_to_catalog = false, LR_format = 'TIFF',
+		                  LR_export_bitDepth = 16, LR_export_useHDR = true },
+		configureProgress = function(_, _)
+			return {
+				setPortionComplete = function() end,
+				setCaption = function(_, c) captions[#captions + 1] = c end,
+				isCanceled = function() return false end,
+			}
+		end,
+		renditions = function()
+			local i = 0
+			return function()
+				i = i + 1
+				if renditions[i] then return i, renditions[i] end
+			end
+		end,
+	}
+
+	-- The encoder is not the subject here; record the calls and succeed.
+	local realRun = IsoEncoder.run
+	IsoEncoder.run = function(spec)
+		rendered[#rendered + 1] = spec.output
+		local f = io.open(spec.output, 'wb')
+		f:write('jpeg')
+		f:close()
+		return true, { totalBytes = 4, primaryBytes = 3, gainMapBytes = 1,
+		               maxBoostLog2 = 1.0 }
+	end
+
+	local ok, err = pcall(function()
+		ExportServiceProvider.processRenderedPhotos(nil, exportContext)
+	end)
+	IsoEncoder.run = realRun
+
+	check(ok, 'the export loop runs to completion (' .. tostring(err) .. ')')
+	checkEqual(#rendered, #renditions, 'every rendition was encoded')
+
+	local seen, duplicate = {}, nil
+	for _, path in ipairs(rendered) do
+		if seen[path] then duplicate = path end
+		seen[path] = true
+	end
+	check(duplicate == nil,
+		'no two workers were given the same output path (' ..
+		tostring(duplicate) .. ')')
+
+	check(not seen[tmpDir .. '/dup.jpg'],
+		'an existing .jpg from an earlier export is not overwritten')
+
+	local leftOver = 0
+	for _, path in ipairs(intermediates) do
+		local f = io.open(path, 'rb')
+		if f then f:close(); leftOver = leftOver + 1 end
+	end
+	checkEqual(leftOver, 0, 'every intermediate was deleted')
+
+	for _, path in ipairs(rendered) do os.remove(path) end
+	os.remove(tmpDir .. '/dup.jpg')
+end
+
 testDefaults()
 testArguments()
 testValidation()
@@ -385,6 +495,7 @@ testSummary()
 testEncoderPlumbing()
 testDialogsBuildOutsideATask()
 testReportParsing()
+testExportLoop()
 
 local fixture = arg[3]
 if fixture then

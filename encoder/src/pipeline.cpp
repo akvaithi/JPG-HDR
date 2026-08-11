@@ -1,5 +1,7 @@
 #include "pipeline.h"
 
+#include <chrono>
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -528,6 +530,7 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
   band = std::max<uint32_t>(band, static_cast<uint32_t>(sub));
   const uint32_t bandCount = (h + band - 1) / band;
 
+  const auto tPass1 = std::chrono::steady_clock::now();
   // Pass 1: how much headroom does the content actually use?
   //
   // Every pixel is folded into a box-averaged downscale, and the peak is taken
@@ -781,6 +784,8 @@ PipelineResult runPipeline(const TiffReader& tiff, const PipelineOptions& opts) 
     const int radius = std::max<int>(
         2, static_cast<int>(std::max(guideLog.w, guideLog.h) / 16));
     baseLog = guidedFilter(guideLog, radius, std::max(1e-3f, opts.sdrEdge));
+    logf("  pass 1 (measure)   %6.3f s",
+         std::chrono::duration<double>(std::chrono::steady_clock::now() - tPass1).count());
     logf("local tone map: guide %ux%u (1:%u), radius %d, knee %.2f EV, detail %.2f",
          guideLog.w, guideLog.h, guideBlock, radius, kneeStart, detailStrength);
   }

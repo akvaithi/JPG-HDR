@@ -23,10 +23,33 @@ std::string profileDescription(ColorPrimaries p) {
 
 }  // namespace
 
+// Phase timings under --verbose. The export is dominated by moving the
+// intermediate around rather than by anything clever, and guessing which phase
+// costs what has been wrong before, so the numbers are printed rather than
+// inferred.
+namespace {
+struct Phase {
+  const char* name;
+  std::chrono::steady_clock::time_point begin;
+  explicit Phase(const char* n)
+      : name(n), begin(std::chrono::steady_clock::now()) {}
+  ~Phase() {
+    logf("  %-18s %6.3f s", name,
+         std::chrono::duration<double>(std::chrono::steady_clock::now() - begin)
+             .count());
+  }
+};
+}  // namespace
+
 Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
   const auto start = std::chrono::steady_clock::now();
 
-  TiffReader tiff(readFile(opt.inputPath));
+  Bytes fileData;
+  {
+    Phase p("read file");
+    fileData = readFile(opt.inputPath);
+  }
+  TiffReader tiff(std::move(fileData));
   logf("input: %ux%u, %u channels, %u bit%s", tiff.width(), tiff.height(),
        tiff.channels(), tiff.bitsPerSample(), tiff.isFloat() ? " float" : "");
 
@@ -66,7 +89,11 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
     exifSegment = buildExifAppSegment(tiff, eo);
   }
 
-  PipelineResult px = runPipeline(tiff, po);
+  PipelineResult px;
+  {
+    Phase ph("pipeline");
+    px = runPipeline(tiff, po);
+  }
   tiff.releaseFileData();
   logf("tone mapped with %s (%s lift %.2f EV, contrast %.2f); headroom %.2f "
        "stops softened / %.2f true; gain map %.2f to %.2f EV",
@@ -122,6 +149,7 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
     img.height = px.gainHeight;
     img.components = px.gainChannels;
     img.pixels = px.gain.data();
+    Phase ph("gain map jpeg");
     gainMapJpeg = encodeJpeg(img, jo);
     logf("gain map: %ux%u, %d channel(s), %zu bytes", px.gainWidth,
          px.gainHeight, px.gainChannels, gainMapJpeg.size());
@@ -170,6 +198,7 @@ Bytes encodeToMemory(const EncoderOptions& opt, EncodeReport* report) {
     img.height = px.height;
     img.components = 3;
     img.pixels = px.sdr.data();
+    Phase ph("primary jpeg");
     primaryJpeg = encodeJpeg(img, jo);
     logf("primary: %ux%u, %zu bytes", px.width, px.height, primaryJpeg.size());
   }

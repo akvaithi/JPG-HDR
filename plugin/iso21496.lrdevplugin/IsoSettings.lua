@@ -60,6 +60,11 @@ IsoSettings.defaults = {
 	iso_copy_metadata = true,
 	iso_add_to_catalog = false,
 	iso_keep_intermediate = false,
+	-- How many photos are encoded at once. Three is where throughput stops
+	-- improving on an 8-core machine: 0.64 photos/s at one, 0.85 at three, 0.76
+	-- at four. It matters mostly because Lightroom renders faster than one
+	-- encoder drains, and the intermediates it gets ahead by are 268 MB each.
+	iso_workers = 3,
 }
 
 --- The list Lightroom needs so these values are saved in export presets.

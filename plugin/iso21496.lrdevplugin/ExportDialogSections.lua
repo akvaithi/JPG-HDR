@@ -258,6 +258,38 @@ function ExportDialogSections.advancedSection(f, properties)
 		},
 
 		f:row {
+			spacing = f:label_spacing(),
+			f:static_text {
+				title = LOC '$$$/Iso21496/WorkersLabel=Encode at once:',
+				alignment = 'right',
+				width = share 'iso_adv_label_width',
+			},
+			f:slider {
+				value = bind 'iso_workers',
+				min = 1,
+				max = 8,
+				integral = true,
+				width = 160,
+			},
+			f:edit_field {
+				value = bind 'iso_workers',
+				min = 1,
+				max = 8,
+				precision = 0,
+				width_in_digits = 3,
+			},
+		},
+		f:row {
+			f:static_text { title = '', width = share 'iso_adv_label_width' },
+			f:static_text {
+				title = LOC '$$$/Iso21496/WorkersHint=How many photos are encoded in parallel. Lightroom renders faster than one encoder can keep up with, and the intermediates it gets ahead by are large. Three is where throughput stopped improving on an eight-core machine; lower it if the export crowds out everything else.',
+				width_in_chars = 58,
+				height_in_lines = 4,
+				text_color = LrColor(0.4, 0.4, 0.4),
+			},
+		},
+
+		f:row {
 			f:static_text { title = '', width = share 'iso_adv_label_width' },
 			f:static_text {
 				title = bind {

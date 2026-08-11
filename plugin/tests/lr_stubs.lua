@@ -99,15 +99,51 @@ modules.LrTasks = {
 		return code or 1
 	end,
 	canYield = function() return stubs.inTask == true end,
+	-- Tasks are queued, not run on the spot.
+	--
+	-- This used to run the function immediately, which is a poor model and hid
+	-- a real bug: code that starts several tasks and then names files based on
+	-- what exists on disk was tested against a world where each task had
+	-- already finished writing before the next was started. The race it has in
+	-- Lightroom could not happen, so the test passed with the bug in place.
+	--
+	-- A queued task runs when someone waits — sleep or yield — or when the test
+	-- drains it explicitly, which is close enough to cooperative scheduling to
+	-- expose ordering mistakes.
 	startAsyncTask = function(fn)
-		local wasInTask = stubs.inTask
-		stubs.inTask = true
-		local ok, err = pcall(fn)
-		stubs.inTask = wasInTask
-		if not ok then error(err, 0) end
+		stubs.pendingTasks[#stubs.pendingTasks + 1] = fn
 	end,
-	yield = function() end,
+	yield = function() stubs.runOneTask() end,
+	sleep = function(_)
+		if not stubs.inTask then
+			error('We can only wait from within a task', 0)
+		end
+		stubs.runOneTask()
+	end,
 }
+
+stubs.pendingTasks = {}
+
+--- Runs the task that has been waiting longest, if any.
+function stubs.runOneTask()
+	local fn = table.remove(stubs.pendingTasks, 1)
+	if not fn then return false end
+	local wasInTask = stubs.inTask
+	stubs.inTask = true
+	local ok, err = pcall(fn)
+	stubs.inTask = wasInTask
+	if not ok then error(err, 0) end
+	return true
+end
+
+--- Runs every queued task, including any they start themselves.
+function stubs.drainTasks()
+	local guard = 0
+	while stubs.runOneTask() do
+		guard = guard + 1
+		if guard > 10000 then error('lr_stubs: tasks are not draining', 0) end
+	end
+end
 
 local logger = {
 	enable = function() end,
