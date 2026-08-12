@@ -46,6 +46,29 @@ brew install jpeg-turbo exiftool lua                            # macOS
 * **`exiftool_compliance`** (needs exiftool) — the metadata audit from the
   build spec, run the way a reviewer would.
 
+## Tools for the next interop hunt
+
+`scripts/validate.py` and `scripts/probe_imageio.swift` answer "is this file
+right". These four answer "why does theirs survive and ours not", which is a
+different question and took eight rounds of real sends to learn how to ask:
+
+* `to_apple_jpeg.swift` — rewrites one of our files through ImageIO, giving a
+  reference in Apple's own container layout with the same picture and gain map.
+  A survivor to diff against is worth more than any amount of inspection.
+* `diffprim.py` — diffs two primaries segment by segment, hashing contents.
+  Hash *every* segment; `AMPF` hid for eight rounds inside an APP0 whose only
+  visible difference was 16 bytes against 20.
+* `segedit.py` — adds or removes one segment without re-encoding, so a variable
+  can be moved on a file that is known to survive.
+* `splice.py` — swaps the primary and the gain map image between two files,
+  which halves the search space in one send.
+* `match.swift` — matches received files back to what was sent by picture
+  content, because send order is an assumption and batches get reordered.
+
+Two rules, each of which cost a round: build variants from the file that
+*survives* and change one thing, and give every card in a batch different
+pixels or Photos will deduplicate them into a single asset.
+
 Benchmarks are reproducible:
 
 ```bash
